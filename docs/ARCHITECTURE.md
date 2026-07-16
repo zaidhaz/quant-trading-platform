@@ -1,12 +1,42 @@
 # Architecture Blueprint — Institutional Algorithmic Crypto Trading Platform
 
-Status: **Planning phase — no production code has been written.** This document is the
-architecture deliverable requested before implementation begins. It must be reviewed
-and approved before any module in this tree is implemented.
+Status: **Planning phase — no production code has been written.** This document is
+the architecture deliverable requested before implementation begins. It must be
+reviewed and approved before any module in this tree is implemented.
 
 Stack: Python 3.12+, FastAPI, PostgreSQL (+ TimescaleDB extension recommended for
 time-series tables), Redis, Docker/Docker Compose, SQLAlchemy 2.x, Alembic, CCXT /
 CCXT Pro, Pydantic v2, Pytest, Ruff, Black, Mypy, Streamlit, GitHub Actions.
+
+## Revision note (this version)
+
+This is a revision following an architecture review. Summary of what changed and why
+— treat this as an informal ADR for the decisions below; full ADRs go in `docs/adr/`
+once implementation starts.
+
+| Change | Decision | Reasoning |
+|---|---|---|
+| Exchange scope | V1 = Binance Futures only. Bybit stays an *interface*, not an implementation. | The `ExchangeGateway` abstraction was already exchange-agnostic; implementing a second exchange in V1 would validate the abstraction but isn't needed to ship. |
+| AI research | Removed from V1 entirely, moved to Future Roadmap. | Least load-bearing part of the original V1 scope; the plugin interface (`strategies.base_strategy.Strategy`) is already the contract any future AI-generated strategy must satisfy, so nothing needs to be redesigned to add it later. |
+| Optimization | Bayesian search removed from V1; Grid Search + Walk-Forward only. | Validates the optimization *pipeline* (train/test split, overfitting guards) without needing an extra optional dependency (`scikit-optimize`) or tuning a search algorithm before the pipeline itself is proven. |
+| Market regime | Added (`market_regime/`), but scoped to indicator-derived detection (trend/range/volatility/bias) only. `sentiment_filter.py` deferred to roadmap. | Sentiment analysis requires a second data-ingestion pipeline (news/social) that doesn't exist anywhere else in V1's Binance-only scope. Building it now would grow V1's surface area instead of shrinking it. Trend/vol regime, by contrast, is derived entirely from data V1 already ingests. |
+| Feature engine | Added (`features/`). | Net *reduction* in complexity — without it, every strategy reimplements its own indicators. Centralizing and caching them is cheap and strengthens the foundation. |
+| Strategy voting | Added (`strategy_voting/`), but as an **optional, composable pattern** (`CompositeStrategy`), not a mandatory stage between every strategy and Risk. | A mandatory global voting gate collides with the existing multi-strategy model, where each `strategy_instance` owns its own capital, position, and PnL for attribution and walk-forward validation. Making voting an implementation detail *inside* one kind of strategy plugin gets the ensemble pattern without breaking that model or adding a mandatory hop for simple strategies. |
+| Trade journal | Added (`journal/`). | Cheap — mostly a structured view over data the system already produces (signals, fills, positions) plus a few new fields. High operational value for a platform meant to run for months. |
+| Confidence scoring | Added as a field flowing through `Signal` → `SignalEvent` → Risk → Journal → Dashboard → Backtests → Analytics. | Cheap to carry as data. Scoped to degrade gracefully: simple single-signal strategies compute confidence from whatever inputs they have; composite strategies get the full formula including signal agreement. |
+
+**Version 1 scope** (everything else stays on the roadmap, §20):
+
+- Binance Futures (only exchange)
+- Paper Trading
+- Live Trading
+- Backtesting (event-driven, Grid Search + Walk-Forward optimization)
+- Dashboard
+- Risk Engine (incl. circuit breaker)
+- Strategy Engine (incl. Feature Engine, Market Regime, optional Strategy Voting)
+- Portfolio Management
+- Trade Journal
+- Confidence Scoring
 
 ---
 
@@ -31,7 +61,7 @@ quant-trading-platform/
 ├── core/                              # domain kernel — zero external deps
 │   ├── exceptions.py                  # exception hierarchy
 │   ├── constants.py
-│   ├── enums.py                       # OrderSide, OrderType, TimeInForce, etc.
+│   ├── enums.py                       # OrderSide, OrderType, RegimeState, etc.
 │   ├── types.py                       # domain value types (Symbol, Money, Price)
 │   ├── events.py                      # event dataclasses (see §6)
 │   ├── event_bus.py                   # pub/sub abstraction (in-proc + Redis)
@@ -55,6 +85,9 @@ quant-trading-platform/
 │   ├── position.py
 │   ├── account.py                     # Exchange accounts, balances, API keys (encrypted)
 │   ├── strategy.py                    # StrategyInstance, StrategyConfig
+│   ├── signal.py                      # persisted Signal history (confidence, reasoning, regime)
+│   ├── regime.py                      # MarketRegimeSnapshot
+│   ├── journal.py                     # JournalEntry
 │   ├── backtest.py                    # BacktestRun, EquityCurvePoint
 │   └── audit.py                       # AuditLogEntry, RiskEventLog
 │
@@ -63,6 +96,9 @@ quant-trading-platform/
 │   ├── order.py
 │   ├── position.py
 │   ├── strategy.py
+│   ├── signal.py
+│   ├── regime.py
+│   ├── journal.py
 │   ├── backtest.py
 │   └── common.py                      # pagination, envelopes, error shapes
 │
@@ -73,6 +109,9 @@ quant-trading-platform/
 │   ├── trade_repository.py
 │   ├── position_repository.py
 │   ├── strategy_repository.py
+│   ├── signal_repository.py
+│   ├── regime_repository.py
+│   ├── journal_repository.py
 │   └── backtest_repository.py
 │
 ├── market_data/                       # live + historical market data subsystem
@@ -82,8 +121,24 @@ quant-trading-platform/
 │   ├── candle_aggregator.py           # trade/tick → OHLCV bar aggregation
 │   ├── historical_loader.py           # REST backfill + gap detection
 │   └── providers/
-│       ├── binance_futures.py         # exchange-specific WS/REST glue
-│       └── bybit_futures.py
+│       └── binance_futures.py         # V1: Binance only (see §9 for Bybit path)
+│
+├── features/                          # centralized, cached indicator calculation
+│   ├── feature_engine.py              # get(symbol, timeframe, indicator, params)
+│   ├── cache.py                       # Redis-backed incremental cache
+│   └── indicators/
+│       ├── trend.py                   # EMA, ADX, MACD, Donchian
+│       ├── volatility.py              # ATR, Bollinger Bands
+│       ├── momentum.py                # RSI
+│       ├── volume.py                  # VWAP, Volume Profile
+│       └── derivatives.py             # Funding Rate, Open Interest
+│
+├── market_regime/                     # market state classification
+│   ├── trend_detector.py              # trending vs ranging (ADX-based)
+│   ├── range_detector.py
+│   ├── volatility_detector.py         # high/low vol (ATR-percentile-based)
+│   ├── market_state.py                # MarketState value object + aggregator
+│   └── (sentiment_filter.py — deferred to roadmap, §20)
 │
 ├── execution/                         # order lifecycle & exchange adapters
 │   ├── order_manager.py               # state machine: NEW→SUBMITTED→FILLED/…
@@ -91,15 +146,27 @@ quant-trading-platform/
 │   ├── reconciliation.py              # exchange vs local state reconciliation
 │   └── adapters/
 │       ├── base_adapter.py            # implements core.interfaces.exchange_gateway
-│       ├── binance_adapter.py
-│       └── bybit_adapter.py
+│       ├── paper_adapter.py           # simulated fills against live market data
+│       └── binance_adapter.py         # V1: Binance only (see §9 for Bybit path)
 │
 ├── strategies/                        # strategy plugin layer
 │   ├── base_strategy.py               # abstract Strategy class
+│   ├── composite_strategy.py          # optional ensemble base (uses strategy_voting)
 │   ├── registry.py                    # discovery & instantiation of plugins
-│   ├── signal.py                      # Signal value object
+│   ├── signal.py                      # Signal value object (incl. confidence, reasoning)
 │   └── examples/
 │       ├── ma_crossover.py
+│       └── mean_reversion.py
+│
+├── strategy_voting/                   # optional signal-ensemble pattern (see §8.3)
+│   ├── signal_generator.py            # lightweight sub-signal interface (not a full Strategy)
+│   ├── voting_engine.py               # combines sub-signals → final Signal
+│   ├── confidence.py                  # composite confidence formula
+│   └── generators/
+│       ├── trend_following.py
+│       ├── momentum.py
+│       ├── breakout.py
+│       ├── volume.py
 │       └── mean_reversion.py
 │
 ├── portfolio/                         # portfolio & position accounting
@@ -110,14 +177,14 @@ quant-trading-platform/
 │
 ├── risk/                              # pre-trade & portfolio risk controls
 │   ├── risk_engine.py                 # orchestrates all checks
-│   ├── position_sizing.py             # vol-target / fixed-fractional / Kelly-capped
+│   ├── position_sizing.py             # fixed-fractional / vol-target / confidence-scaled
 │   ├── limits.py                      # exposure, leverage, concentration limits
 │   ├── circuit_breaker.py             # drawdown kill-switch, error-rate trip
 │   └── pre_trade_checks.py            # order-level validation pipeline
 │
 ├── analytics/                         # performance measurement & reporting
 │   ├── performance_metrics.py         # Sharpe, Sortino, Calmar, max DD, etc.
-│   ├── attribution.py                 # per-strategy / per-symbol PnL attribution
+│   ├── attribution.py                 # per-strategy / per-symbol / per-regime PnL
 │   ├── reporting.py                   # report generation (PDF/HTML export)
 │   └── tearsheet.py
 │
@@ -128,17 +195,17 @@ quant-trading-platform/
 │   ├── broker_simulator.py            # simulated OrderManager + fills
 │   └── slippage_models.py             # fee/slippage/latency models
 │
-├── optimization/                      # parameter search & validation
+├── optimization/                      # parameter search & validation (V1: no Bayesian)
 │   ├── walk_forward.py                # rolling train/test optimizer
-│   ├── param_search.py                # grid/random/Bayesian search
+│   ├── param_search.py                # grid + random search
 │   ├── objective_functions.py
 │   └── overfitting_guards.py          # deflated Sharpe, CSCV, min sample size
 │
-├── ai_research/                       # AI-assisted strategy research
-│   ├── llm_client.py                  # provider-agnostic LLM wrapper
-│   ├── strategy_generator.py          # LLM-assisted strategy scaffolding
-│   ├── research_agent.py              # hypothesis → backtest → report loop
-│   └── prompts/
+├── journal/                           # automatic trade journaling
+│   ├── journal_recorder.py            # subscribes to bus, opens/closes entries
+│   └── exporters/
+│       ├── csv_exporter.py
+│       └── pdf_exporter.py
 │
 ├── api/                               # FastAPI presentation layer
 │   ├── main.py                        # app factory, router mounting, lifespan
@@ -150,6 +217,9 @@ quant-trading-platform/
 │   │   │   ├── orders.py
 │   │   │   ├── positions.py
 │   │   │   ├── strategies.py
+│   │   │   ├── signals.py             # signal + confidence history
+│   │   │   ├── regime.py              # current/historical market regime
+│   │   │   ├── journal.py             # journal query + export
 │   │   │   ├── backtests.py
 │   │   │   └── system.py              # health, readiness, version
 │   │   └── router.py                  # v1 aggregate router
@@ -166,12 +236,13 @@ quant-trading-platform/
 ├── dashboard/                         # Streamlit operator UI (talks to API only)
 │   ├── app.py
 │   ├── pages/
-│   │   ├── overview.py
+│   │   ├── overview.py                # incl. current regime, circuit-breaker status
 │   │   ├── positions.py
 │   │   ├── strategies.py
+│   │   ├── journal.py                 # trade journal viewer/export
 │   │   ├── backtests.py
 │   │   └── risk.py
-│   └── components/                    # reusable charts/widgets
+│   └── components/
 │
 ├── notifications/                     # outbound alerting
 │   ├── base_notifier.py               # implements core.interfaces.notifier
@@ -220,6 +291,10 @@ quant-trading-platform/
 └── TASKS.md
 ```
 
+**Explicitly out of the V1 tree** (interfaces stay ready for them, code doesn't ship
+until roadmap phases, §20): `execution/adapters/bybit_adapter.py`, `ai_research/`,
+`market_regime/sentiment_filter.py`, Bayesian search in `optimization/param_search.py`.
+
 ---
 
 ## 2. Folder-by-Folder Explanation
@@ -232,30 +307,32 @@ quant-trading-platform/
 | `models/` | ORM row definitions. Mirrors the DB schema (§5). Never imported by `core` or `strategies`. | `database` |
 | `schemas/` | Pydantic request/response/DTO contracts used at API and service boundaries. Keeps ORM models out of the API layer. | `core` |
 | `repositories/` | Implements `core.interfaces.repository` per aggregate; the only layer allowed to write SQLAlchemy queries. | `models`, `database` |
-| `market_data/` | Owns exchange WebSocket lifecycle, normalizes raw exchange payloads into `core.events` (`TickEvent`, `BookUpdateEvent`, `CandleEvent`), and historical backfill. | `core`, `execution.adapters` (for REST clients), `repositories` |
-| `execution/` | Owns the order lifecycle state machine and exchange adapters implementing `core.interfaces.exchange_gateway` via CCXT/CCXT Pro. | `core`, `repositories` |
-| `strategies/` | Plugin surface. Strategies only see `core.events`/`core.interfaces` and emit `Signal` objects — they cannot call exchanges or the DB directly. | `core` only |
+| `market_data/` | Owns exchange WebSocket lifecycle, normalizes raw exchange payloads into `core.events`, and historical backfill. V1: Binance Futures only. | `core`, `execution.adapters` (REST clients), `repositories` |
+| `features/` | Centralizes every calculated indicator (EMA, ATR, ADX, RSI, MACD, VWAP, Donchian, Bollinger, Funding Rate, Open Interest). Strategies and `market_regime` *request* values from here instead of computing their own — one calculation per (symbol, timeframe, indicator, params), cached in Redis and updated incrementally as candles close, not recomputed per requester. | `core`, `repositories` (historical warmup) |
+| `market_regime/` | Classifies current market state per symbol — trending/ranging, high/low volatility, bullish/bearish/neutral — from `features/` indicators (ADX for trend/range, ATR percentile for vol regime, price-vs-MA slope for bias). Publishes `MarketRegimeChangedEvent` on transitions. V1 is rule-based; no external sentiment data. | `core`, `features` |
+| `execution/` | Owns the order lifecycle state machine and exchange adapters implementing `core.interfaces.exchange_gateway`. V1 ships `paper_adapter` + `binance_adapter`. | `core`, `repositories` |
+| `strategies/` | Plugin surface. A strategy only sees `core.events`/`core.interfaces` plus read-only `features`/`market_regime` context and emits `Signal` objects — it cannot call exchanges or the DB directly. `composite_strategy.py` is the optional base class for ensemble strategies built on `strategy_voting/` (see §8.3) — plain strategies don't need it. | `core`, `features`, `market_regime`, `strategy_voting` (composite only) |
+| `strategy_voting/` | Optional library used *inside* a `CompositeStrategy`: runs several lightweight `SignalGenerator`s (trend-following, momentum, breakout, volume, mean-reversion), each emitting direction + confidence + reasoning, and combines them into one final `Signal`. Not a mandatory stage for every strategy — see §8.3 for why. | `core`, `features` |
 | `portfolio/` | Tracks positions/balances/PnL from fills; the single source of truth for "what do we hold." | `core`, `repositories` |
-| `risk/` | Intercepts every order intent before it reaches `execution`; enforces limits, sizing, and the kill-switch. | `core`, `portfolio` |
-| `analytics/` | Derives performance statistics from portfolio/trade history — read-only consumer. | `portfolio`, `repositories` |
-| `backtesting/` | Replays historical data through the **same** `strategies` + `risk` + `portfolio` code paths used live, with a simulated broker instead of `execution`. | `core`, `strategies`, `risk`, `portfolio`, `repositories` |
-| `optimization/` | Drives `backtesting.engine` repeatedly across parameter grids / rolling windows. | `backtesting` |
-| `ai_research/` | LLM-assisted hypothesis generation that produces strategy scaffolds and triggers `optimization`/`backtesting` runs; never touches live execution. | `strategies`, `backtesting` |
+| `risk/` | Intercepts every order intent before it reaches `execution`; enforces limits, sizing (including an optional confidence-scaled sizing model), and the kill-switch. | `core`, `portfolio` |
+| `analytics/` | Derives performance statistics — including per-regime and per-confidence-bucket attribution — from portfolio/trade/signal history. Read-only consumer. | `portfolio`, `repositories` |
+| `backtesting/` | Replays historical data through the **same** `strategies` + `features` + `market_regime` + `risk` + `portfolio` code paths used live, with a simulated broker instead of `execution`. | `core`, `strategies`, `features`, `market_regime`, `risk`, `portfolio`, `repositories` |
+| `optimization/` | Drives `backtesting.engine` repeatedly across parameter grids / rolling windows. V1: grid + random search only. | `backtesting` |
+| `journal/` | Subscribes to `SignalEvent`/`FillEvent`/`OrderUpdateEvent` on the bus; opens a journal entry on new-position fills, finalizes it on close with PnL/fees/funding/holding-time, and supports CSV/PDF export. | `core`, `repositories` |
 | `api/` | FastAPI HTTP/WS presentation layer; thin — delegates to `services/`. | `services`, `schemas` |
 | `services/` | Application/use-case layer orchestrating repositories + domain modules for the API and background workers. | `repositories`, `market_data`, `execution`, `strategies`, `risk`, `portfolio`, `backtesting` |
-| `dashboard/` | Streamlit UI. Talks **only** to the API (`api/`), never imports `database`/`models` directly, so the dashboard can be deployed independently. | `api` (HTTP client) |
+| `dashboard/` | Streamlit UI. Talks **only** to the API (`api/`), never imports `database`/`models` directly. | `api` (HTTP client) |
 | `notifications/` | Formats and delivers alerts for events emitted on the event bus. | `core` |
-| `utils/` | Generic helpers with no domain knowledge (retry/backoff, time math, rate limiting). | nothing internal |
+| `utils/` | Generic helpers with no domain knowledge. | nothing internal |
 | `tests/` | Test suite, mirrors source tree. | everything |
 | `scripts/` | Operational entry points for humans/cron, not imported by the app. | `services` |
 
-**Clean Architecture dependency rule enforced:** arrows only point inward. `core/`
-depends on nothing. `strategies/`, `risk/`, `portfolio/` depend only on `core/`.
-`repositories/`, `execution/`, `market_data/` are infrastructure that implements
-`core/interfaces`. `api/`, `dashboard/`, `services/` are the outermost layer and may
-depend on everything beneath them, but nothing beneath depends back on them. This is
-what makes `backtesting/` able to reuse live strategy code unmodified — it substitutes
-a simulated adapter behind the same interface.
+**Clean Architecture dependency rule, updated import-boundary check:** `strategies/`
+may now import `core`, `features`, `market_regime`, and `strategy_voting` (all
+read-only domain-support layers) — but still never `execution`, `database`,
+`models`, or `api`. `features` and `market_regime` may import `core`/`repositories`
+but never `strategies`/`execution`/`api` (no upward or sideways leakage into
+presentation/execution layers).
 
 ---
 
@@ -263,9 +340,8 @@ a simulated adapter behind the same interface.
 
 ```mermaid
 flowchart LR
-    subgraph Exchanges
+    subgraph Exchange
         BIN[Binance Futures WS/REST]
-        BYB[Bybit Futures WS/REST]
     end
 
     subgraph MarketDataLayer[market_data/]
@@ -277,8 +353,17 @@ flowchart LR
 
     BUS((core.event_bus))
 
+    subgraph FeatureLayer[features/]
+        FEAT[feature_engine\n+ Redis cache]
+    end
+
+    subgraph RegimeLayer[market_regime/]
+        REG[market_state]
+    end
+
     subgraph StrategyLayer[strategies/]
         STRAT[Strategy.on_event]
+        COMP[CompositeStrategy\n+ strategy_voting]
     end
 
     subgraph RiskLayer[risk/]
@@ -303,35 +388,45 @@ flowchart LR
         DASH[dashboard/ Streamlit]
         NOTIFY[notifications/]
         ANALYTICS[analytics/]
+        JOURNAL[journal/]
     end
 
     BIN --> WS
-    BYB --> WS
     WS --> NORM --> BOOK
     NORM --> CANDLE
     BOOK --> BUS
     CANDLE --> BUS
+    CANDLE --> FEAT
+    FEAT --> REG
     BUS --> STRAT
-    STRAT -- Signal --> RISK
+    BUS --> COMP
+    FEAT -.-> STRAT
+    FEAT -.-> COMP
+    REG -.-> STRAT
+    REG -.-> COMP
+    STRAT -- Signal w/ confidence --> RISK
+    COMP -- Signal w/ confidence --> RISK
     RISK -- approved OrderIntent --> OM
     OM --> ADAPT --> BIN
-    OM --> ADAPT --> BYB
     ADAPT -- FillEvent --> BUS
     BUS --> POS --> PNL
     POS --> DB
     CANDLE --> DB
     BUS --> NOTIFY
+    BUS --> JOURNAL --> DB
     PNL --> ANALYTICS --> DB
     DB --> API
     REDIS <--> BUS
+    REDIS <--> FEAT
     API --> DASH
     API -. WS push .-> DASH
 ```
 
-Key property: **market data and fills flow through one event bus.** Every downstream
-consumer (strategies, portfolio, risk, notifications, analytics) subscribes to that
-bus rather than being called directly — this is what lets backtesting replace the
-exchange side without touching strategy/risk/portfolio code.
+Key property unchanged from the original design: market data and fills flow through
+one event bus, so downstream consumers subscribe rather than being called directly.
+`features/` and `market_regime/` sit as a **pull-based, cached lookup layer** that
+strategies query synchronously via their context object — they are not new mandatory
+hops on the event path itself.
 
 ---
 
@@ -346,6 +441,10 @@ flowchart TB
     core --> portfolio
     core --> models
     core --> repositories
+    core --> features
+    core --> market_regime
+    core --> strategy_voting
+    core --> journal
 
     models --> database
     repositories --> models
@@ -356,19 +455,33 @@ flowchart TB
     execution --> core
     execution --> repositories
 
+    features --> core
+    features --> repositories
+    market_regime --> core
+    market_regime --> features
+
     strategies --> core
+    strategies --> features
+    strategies --> market_regime
+    strategies --> strategy_voting
+    strategy_voting --> core
+    strategy_voting --> features
+
     risk --> core
     risk --> portfolio
     portfolio --> core
     portfolio --> repositories
 
+    journal --> core
+    journal --> repositories
+
     backtesting --> strategies
+    backtesting --> features
+    backtesting --> market_regime
     backtesting --> risk
     backtesting --> portfolio
     backtesting --> repositories
     optimization --> backtesting
-    ai_research --> optimization
-    ai_research --> backtesting
 
     analytics --> portfolio
     analytics --> repositories
@@ -380,6 +493,7 @@ flowchart TB
     services --> portfolio
     services --> backtesting
     services --> analytics
+    services --> journal
     services --> repositories
 
     api --> services
@@ -395,123 +509,116 @@ flowchart TB
     utils -.-> api
 ```
 
-Rule of thumb enforced by CI (via `ruff`/import-linter contracts, see §17/§18):
-`core` never imports from any other first-party package; `strategies` never imports
-`execution`, `database`, `models`, or `api`.
+Note the removed edge from the previous revision: `ai_research` no longer appears in
+this graph — it's deferred to the roadmap (§20), where it will attach at exactly one
+point: producing `strategies/` plugins that satisfy `core.interfaces.strategy`,
+identical to how `strategies/examples/` are written today. No other module needs to
+change shape to accommodate it later.
 
 ---
 
 ## 5. Database Schema
 
-Recommendation: PostgreSQL with the **TimescaleDB** extension enabled for the
+Recommendation unchanged: PostgreSQL with the **TimescaleDB** extension for
 time-series-heavy tables (`candles`, `trades`, `orderbook_snapshots`,
-`equity_curve_points`). If TimescaleDB is not available in the deployment target,
-these tables still work as plain partitioned Postgres tables (partition by month on
-`ts`), so the extension is an optimization, not a hard dependency.
+`equity_curve_points`, `market_regime_snapshots`). Falls back to plain monthly-
+partitioned Postgres tables if the extension isn't available.
 
 ```mermaid
 erDiagram
     EXCHANGES ||--o{ SYMBOLS : lists
     EXCHANGES ||--o{ ACCOUNTS : has
     SYMBOLS ||--o{ CANDLES : has
-    SYMBOLS ||--o{ ORDERBOOK_SNAPSHOTS : has
     SYMBOLS ||--o{ ORDERS : traded_as
+    SYMBOLS ||--o{ SIGNALS : generated_for
+    SYMBOLS ||--o{ MARKET_REGIME_SNAPSHOTS : classified_for
     ACCOUNTS ||--o{ BALANCES : holds
     ACCOUNTS ||--o{ ORDERS : places
     STRATEGY_DEFINITIONS ||--o{ STRATEGY_INSTANCES : instantiated_as
+    STRATEGY_INSTANCES ||--o{ SIGNALS : emits
     STRATEGY_INSTANCES ||--o{ ORDERS : generates
     STRATEGY_INSTANCES ||--o{ POSITIONS : owns
     STRATEGY_INSTANCES ||--o{ BACKTEST_RUNS : backtested_by
     ORDERS ||--o{ TRADES : fills_into
-    ORDERS ||--o{ AUDIT_LOG : logged_by
+    SIGNALS ||--o| JOURNAL_ENTRIES : opens_or_closes
     POSITIONS ||--o{ TRADES : composed_of
+    POSITIONS ||--o| JOURNAL_ENTRIES : documented_by
     BACKTEST_RUNS ||--o{ BACKTEST_TRADES : produces
     BACKTEST_RUNS ||--o{ EQUITY_CURVE_POINTS : produces
-    OPTIMIZATION_RUNS ||--o{ BACKTEST_RUNS : contains
     RISK_LIMITS }o--|| STRATEGY_INSTANCES : constrains
     ALERTS }o--|| STRATEGY_INSTANCES : triggered_by
 ```
 
 ### Core tables
 
-**`exchanges`** — `id, name, ccxt_id, is_futures, is_active, created_at`
+Unchanged from the original design: `exchanges`, `symbols`, `accounts`, `balances`,
+`candles`, `orderbook_snapshots`, `strategy_definitions`, `strategy_instances`,
+`orders`, `trades`, `positions`, `backtest_runs`, `backtest_trades`,
+`equity_curve_points`, `risk_limits`, `audit_log`, `alerts`. (`optimization_runs`
+retained — grid/random search runs still need a parent record even without Bayesian
+search.)
 
-**`symbols`** — `id, exchange_id FK, base_asset, quote_asset, symbol_native, contract_type, tick_size, lot_size, is_active`
+### New tables (this revision)
 
-**`accounts`** — `id, exchange_id FK, label, api_key_encrypted, api_secret_encrypted, permissions (enum: read_only/trade), is_paper, created_at`
-> API credentials are encrypted at the application layer (Fernet/KMS) before storage — see §13.
+**`signals`** — `id, strategy_instance_id FK, symbol_id FK, direction (BUY/SELL/HOLD), confidence (0-100), reasoning TEXT, regime_snapshot_id FK NULLABLE, features_snapshot JSONB, ts`
+> Persists every signal a strategy emits, whether or not it results in an order. This is what lets confidence/regime data flow into the Journal, Analytics, and Backtests without re-deriving it after the fact.
 
-**`balances`** — `id, account_id FK, asset, free, locked, ts` (snapshot table, latest-per-account queried via index; history retained for reconciliation)
+**`market_regime_snapshots`** (hypertable) — `symbol_id FK, ts, trend_state (TRENDING/RANGING), volatility_state (HIGH/LOW), bias (BULLISH/BEARISH/NEUTRAL), raw_metrics JSONB (adx, atr_percentile, ma_slope, …)`
 
-**`candles`** (hypertable, partition key `ts`) — `symbol_id FK, timeframe, ts, open, high, low, close, volume, trade_count`, PK `(symbol_id, timeframe, ts)`
+**`journal_entries`** — `id, strategy_instance_id FK, symbol_id FK, position_id FK, entry_signal_id FK, exit_signal_id FK NULLABLE, entry_reason TEXT, exit_reason TEXT NULLABLE, indicators_snapshot JSONB, market_regime JSONB, confidence_score, position_size, risk_pct, pnl, fees, funding, holding_time_seconds, screenshot_url NULLABLE, notes TEXT, entry_ts, exit_ts NULLABLE`
+> One row per round-trip trade. Opened when a position's first fill lands (from `entry_signal_id`), finalized when the position flattens. `entry_reason`/`exit_reason` and the indicator/regime snapshots are copied from the linked `signals` rows at the time they fired, so the journal reads correctly even if indicator definitions change later.
 
-**`orderbook_snapshots`** (hypertable) — `symbol_id FK, ts, bids JSONB, asks JSONB, sequence_id`
-
-**`strategy_definitions`** — `id, name, plugin_module_path, version, description, param_schema JSONB, created_at`
-
-**`strategy_instances`** — `id, strategy_definition_id FK, name, mode (enum: backtest/paper/live), params JSONB, allocated_capital, status (enum: active/paused/stopped), created_at`
-
-**`orders`** — `id, exchange_order_id, strategy_instance_id FK, account_id FK, symbol_id FK, side, order_type, time_in_force, quantity, price, status (enum: NEW/SUBMITTED/PARTIALLY_FILLED/FILLED/CANCELED/REJECTED/EXPIRED), submitted_at, updated_at, client_order_id (idempotency key, unique)`
-
-**`trades`** — `id, order_id FK, exchange_trade_id, quantity, price, fee, fee_asset, is_maker, ts`
-
-**`positions`** — `id, strategy_instance_id FK, symbol_id FK, side, quantity, entry_price, unrealized_pnl, realized_pnl, leverage, updated_at`
-
-**`backtest_runs`** — `id, strategy_instance_id FK, params JSONB, start_date, end_date, initial_capital, status, final_equity, sharpe, max_drawdown, created_at`
-
-**`backtest_trades`** — `id, backtest_run_id FK, symbol_id FK, side, quantity, entry_price, exit_price, entry_ts, exit_ts, pnl`
-
-**`equity_curve_points`** (hypertable) — `backtest_run_id FK NULLABLE, strategy_instance_id FK NULLABLE, ts, equity, drawdown_pct` (nullable FKs distinguish live vs backtest curves sharing one table, or split into two tables if preferred — an ADR decision, see §17 process)
-
-**`optimization_runs`** — `id, strategy_definition_id FK, search_type (grid/random/bayesian), objective, param_space JSONB, status, created_at`
-
-**`risk_limits`** — `id, scope (enum: global/strategy/symbol), scope_id, max_position_notional, max_leverage, max_daily_loss, max_drawdown_pct, is_active`
-
-**`audit_log`** — `id, actor (enum: system/user/strategy), action, entity_type, entity_id, payload JSONB, ts` — append-only, never updated/deleted.
-
-**`alerts`** — `id, severity, source, message, context JSONB, delivered_channels JSONB, ts`
-
-Indexing notes: composite index on `orders(strategy_instance_id, status)`, unique
-index on `orders(client_order_id)` for idempotent submission, BRIN or Timescale
-chunk-based indexing on all `ts` columns, `positions(strategy_instance_id, symbol_id)`
-unique for the "current position" row.
+Indexing notes (additions): `signals(strategy_instance_id, ts)`,
+`signals(symbol_id, ts)`, `journal_entries(strategy_instance_id, entry_ts)`,
+Timescale chunking on `market_regime_snapshots.ts`.
 
 ---
 
 ## 6. Event Flow
 
-`core/events.py` defines an immutable event hierarchy; `core/event_bus.py` provides an
-abstraction with two implementations: an **in-process asyncio bus** (used inside a
-single worker, and always used inside the backtesting engine for determinism) and a
-**Redis Streams/Pub-Sub bus** (used to fan events out across separate worker
-processes/containers in live/paper mode).
+`core/events.py` and `core/event_bus.py` are unchanged in mechanism (in-process
+asyncio bus for backtest determinism, Redis bus for live process separation).
+`SignalEvent` gains `confidence: float` and `reasoning: str` fields; `features/` and
+`market_regime/` are **pulled synchronously** by strategies rather than sitting on
+the event path, so they don't add a hop to the pipeline itself — they add a
+side-lookup.
 
 ```mermaid
 sequenceDiagram
     participant EX as Exchange WS
     participant MD as market_data
     participant BUS as event_bus
+    participant FEAT as features
+    participant REG as market_regime
     participant ST as strategies
     participant RK as risk
     participant EXE as execution
     participant PF as portfolio
+    participant JR as journal
     participant NT as notifications
     participant DB as repositories
 
     EX->>MD: raw tick/book/trade payload
-    MD->>BUS: publish(MarketDataEvent)
-    BUS->>ST: MarketDataEvent
-    ST->>BUS: publish(SignalEvent)
+    MD->>BUS: publish(CandleEvent)
+    BUS->>FEAT: CandleEvent (incremental indicator update)
+    FEAT->>REG: updated indicators
+    REG->>REG: recompute MarketState on candle close
+    BUS->>ST: CandleEvent
+    ST->>FEAT: get(symbol, timeframe, indicator)
+    ST->>REG: current(symbol)
+    ST->>BUS: publish(SignalEvent w/ confidence, reasoning)
     BUS->>RK: SignalEvent
-    RK->>RK: pre_trade_checks + limits
+    RK->>RK: pre_trade_checks + limits + sizing (optionally confidence-scaled)
     alt approved
         RK->>BUS: publish(OrderIntentEvent)
         BUS->>EXE: OrderIntentEvent
         EXE->>EX: place order (CCXT)
         EX-->>EXE: ack / fill
-        EXE->>BUS: publish(OrderUpdateEvent / FillEvent)
+        EXE->>BUS: publish(FillEvent)
         BUS->>PF: FillEvent
         PF->>DB: persist position/trade
+        BUS->>JR: SignalEvent + FillEvent
+        JR->>DB: open/finalize journal_entries
         BUS->>NT: FillEvent
     else rejected
         RK->>BUS: publish(RiskRejectedEvent)
@@ -520,55 +627,47 @@ sequenceDiagram
     BUS->>DB: append AuditLogEntry for every event
 ```
 
-Event types (non-exhaustive): `TickEvent`, `BookUpdateEvent`, `CandleEvent`,
-`SignalEvent`, `OrderIntentEvent`, `OrderUpdateEvent`, `FillEvent`,
-`RiskRejectedEvent`, `CircuitBreakerTrippedEvent`, `PortfolioUpdateEvent`,
-`AlertEvent`. Every event carries `event_id`, `ts`, `source`, `correlation_id`
-(propagated from the originating market data tick through to the resulting fill, for
-end-to-end tracing).
-
-**Determinism guarantee:** the backtesting engine drives the exact same
-`strategies → risk → portfolio` consumers through the in-process bus, replacing only
-`market_data`'s live source with `backtesting.data_feed` and `execution`'s live
-adapter with `backtesting.broker_simulator`. This is the architectural centerpiece
-that prevents backtest/live logic divergence.
+New event types this revision: `MarketRegimeChangedEvent` (published by
+`market_regime` on a state transition, consumed by `notifications` and `journal` for
+context). `SignalEvent` is now always persisted to `signals` regardless of whether it
+results in an order — this is what makes per-regime/per-confidence analytics
+possible later without replaying raw market data.
 
 ---
 
 ## 7. Risk Management Architecture
 
-Risk is enforced in **layers**, each of which can independently block an order:
+Unchanged from the original design (layers: strategy config validation → pre-trade
+checks → position sizing → portfolio-level limits → circuit breaker → post-trade
+reconciliation — see the original section text below), with one addition:
+
+**Confidence-aware sizing.** `risk/position_sizing.py` gains a third model alongside
+fixed-fractional and volatility-target: **confidence-scaled sizing**, which scales
+the fixed-fractional or vol-target size by `signal.confidence / 100` (clamped to a
+configurable floor so a low-confidence signal doesn't round to zero and a
+high-confidence signal doesn't bypass the base risk model entirely). This is what
+makes confidence scoring meaningfully "flow through the Risk Engine" rather than
+being a display-only field — it's optional per `strategy_instance` config, not
+mandatory, so existing simple strategies without a meaningful confidence formula can
+opt out and keep fixed-fractional sizing.
 
 1. **Strategy-level config validation** — `param_schema` on `strategy_definitions`
-   validated by Pydantic at instantiation time (e.g., max leverage a strategy is
-   even allowed to request).
-2. **Pre-trade checks** (`risk/pre_trade_checks.py`) — run synchronously on every
-   `SignalEvent` before it becomes an `OrderIntentEvent`:
-   - Notional/leverage within `risk_limits` for that strategy/symbol/account.
-   - Position concentration (max % of portfolio in one symbol/sector).
-   - Order size sanity (min/max qty, tick/lot compliance) to avoid fat-finger/exchange rejects.
-   - Duplicate/idempotency check via `client_order_id`.
-3. **Position sizing** (`risk/position_sizing.py`) — converts a directional `Signal`
-   into a sized order using a pluggable model (fixed-fractional, volatility-target,
-   Kelly-capped). This runs *before* pre-trade checks re-validate the sized result.
-4. **Portfolio-level limits** (`risk/limits.py`) — aggregate exposure across all
-   strategies sharing an account (gross/net exposure, correlation-adjusted exposure,
-   max concurrent open positions).
-5. **Circuit breaker** (`risk/circuit_breaker.py`) — a global kill switch that trips on:
-   - Daily loss exceeding `max_daily_loss`.
-   - Drawdown exceeding `max_drawdown_pct`.
-   - Abnormal error/reject rate from an exchange adapter (protects against a broken
-     integration hammering the exchange or trading on stale data).
-   - Manual operator trip via API/dashboard.
-   When tripped: reject all new `OrderIntentEvent`s, optionally auto-flatten open
-   positions (configurable per severity), and emit `CircuitBreakerTrippedEvent` →
-   notifications at highest severity.
-6. **Post-trade reconciliation** (`execution/reconciliation.py`) — periodically diffs
-   local `positions`/`orders` state against exchange-reported state; mismatches raise
-   an `AlertEvent` and can auto-trip the circuit breaker.
+   validated by Pydantic at instantiation time.
+2. **Pre-trade checks** (`risk/pre_trade_checks.py`) — notional/leverage limits,
+   position concentration, order size sanity, idempotency via `client_order_id`.
+3. **Position sizing** (`risk/position_sizing.py`) — fixed-fractional /
+   volatility-target / confidence-scaled, pluggable per strategy instance.
+4. **Portfolio-level limits** (`risk/limits.py`) — aggregate exposure across
+   strategies sharing an account.
+5. **Circuit breaker** (`risk/circuit_breaker.py`) — daily loss, drawdown, abnormal
+   exchange error rate, or manual trip; rejects new `OrderIntentEvent`s and optionally
+   auto-flattens positions.
+6. **Post-trade reconciliation** (`execution/reconciliation.py`) — periodic
+   local-vs-exchange diff; mismatches raise an `AlertEvent` and can auto-trip the
+   breaker.
 
-Risk limits are **data, not code** (`risk_limits` table) so they can be tuned without
-a deploy, and every change to them is written to `audit_log`.
+Risk limits remain **data, not code** (`risk_limits` table), tunable without a
+deploy, every change audited.
 
 ---
 
@@ -583,24 +682,122 @@ core.interfaces.strategy.Strategy (ABC)
     └── params: PydanticModel (declares its own config schema)
 ```
 
-- **Isolation**: a strategy only ever receives `core.events` and returns `Signal`
-  objects; it has no reference to the exchange adapter, DB session, or event bus
-  directly. This makes strategies trivially unit-testable and prevents a
-  misbehaving strategy from bypassing risk checks.
-- **Registry** (`strategies/registry.py`): strategies self-register via a decorator
-  (`@register_strategy("ma_crossover")`) or Python entry-points
-  (`pyproject.toml [project.entry-points."quant.strategies"]`) so third-party/private
-  strategy packages can be installed without modifying this repo — this is the
-  extension point for "plugin architecture."
-- **Config-driven instantiation**: `strategy_instances.params` (JSONB) is validated
-  against the strategy's declared Pydantic schema at load time; invalid configs fail
-  fast before any capital is allocated.
-- **Context object**: `StrategyContext` passed at `on_start` exposes *read-only*
-  helpers (current position, recent candles) backed by `portfolio`/`repositories`,
-  never raw DB/exchange handles.
-- **Versioning**: `strategy_definitions.version` + git-tracked plugin module path
-  means a live strategy instance always records exactly which code version produced
-  its signals, for audit and reproducibility.
+- **Isolation** unchanged: a strategy only ever receives `core.events` and returns
+  `Signal` objects; no direct exchange/DB/event-bus handles.
+- **`StrategyContext`** now exposes, alongside the existing read-only position/candle
+  helpers: `context.features.get(symbol, timeframe, indicator, **params)` and
+  `context.regime.current(symbol) -> MarketState`. Both are synchronous cached
+  lookups — no strategy needs to know these are backed by Redis.
+- **Registry, config-driven instantiation, versioning** — unchanged from the original
+  design (decorator/entry-point registration, Pydantic-validated `params`, git-tracked
+  plugin module path recorded per instance for audit).
+
+### 8.1 Feature Engine
+
+`features/feature_engine.py` exposes one call: `get(symbol, timeframe, indicator,
+**params) -> Series | float`. Internally:
+- Each indicator implementation (`features/indicators/*.py`) computes incrementally
+  from the last cached value plus the newest closed candle, rather than recomputing
+  the full lookback window on every call.
+- Results are cached in Redis keyed by `(symbol, timeframe, indicator, params_hash)`
+  with a TTL slightly longer than one candle period, so N strategies requesting the
+  same `ATR(14)` on the same symbol/timeframe compute it once, not N times.
+- On cold start (or cache miss), warms up from `repositories.market_repository`
+  historical candles for the indicator's required lookback.
+- In backtests, the same `feature_engine` is driven by `backtesting.event_simulator`
+  with time-boxing enforced identically to every other lookback (§10) — no look-ahead
+  leakage through cached "future" values.
+
+### 8.2 Market Regime
+
+`market_regime/market_state.py` defines `MarketState(trend, volatility, bias)` where:
+- `trend_detector.py` classifies TRENDING vs RANGING via ADX threshold (from
+  `features`).
+- `volatility_detector.py` classifies HIGH vs LOW volatility via ATR-percentile over
+  a rolling lookback (from `features`).
+- `range_detector.py` is the complement of `trend_detector` (Donchian-channel-width /
+  price-compression check), kept as a separate module since range detection uses a
+  different signal than "not trending" in practice (e.g., a symbol can be neither
+  cleanly trending nor cleanly range-bound during a regime transition).
+- Bias (bullish/bearish/neutral) derives from moving-average slope/ordering, also
+  from `features`.
+- Recomputed on every candle close per symbol/timeframe; a change from the previous
+  cached `MarketState` publishes `MarketRegimeChangedEvent`.
+- **Deferred to roadmap:** `sentiment_filter.py` — would consume an external
+  news/social data pipeline that doesn't exist in V1's Binance-only scope (§20).
+  `MarketState` is deliberately structured so a `sentiment` field can be added later
+  without changing its consumers' call sites.
+
+### 8.3 Strategy Voting Engine (optional pattern, not a mandatory gate)
+
+**Why optional, not mandatory:** the existing multi-strategy model gives each
+`strategy_instance` its own `allocated_capital`, position, and PnL — that's what
+makes per-strategy attribution, backtesting, and walk-forward validation meaningful
+per strategy. A *mandatory* voting stage between every strategy and Risk would mean
+no single strategy ever owns a position or PnL of its own, breaking that model for
+every simple strategy in the system just to support the subset that wants an
+ensemble. Instead:
+
+```
+strategies.composite_strategy.CompositeStrategy(base_strategy.Strategy)
+    generators: list[strategy_voting.signal_generator.SignalGenerator]
+    def on_market_data(event):
+        sub_signals = [g.evaluate(event, context) for g in self.generators]
+        final = strategy_voting.voting_engine.combine(sub_signals)
+        emit(final)  # exactly one Signal, same as any other strategy
+```
+
+- `strategy_voting.signal_generator.SignalGenerator` is a **lighter-weight interface**
+  than `Strategy` — it returns `(direction, confidence, reasoning)` for one bar, it
+  does not own capital or a position. `strategy_voting/generators/` provides the five
+  example generators from the review (trend-following, momentum, breakout, volume,
+  mean-reversion) as reusable building blocks any `CompositeStrategy` can mix.
+- `voting_engine.combine()` aggregates sub-signal direction + confidence into one
+  final `(direction, confidence, reasoning_summary)` — reasoning summary concatenates
+  each generator's rationale for journal/audit readability.
+- From the rest of the system's point of view, a `CompositeStrategy` is
+  indistinguishable from any other strategy: it emits one `Signal`, goes through Risk
+  once, owns one position. **Nothing else in the architecture needs to know voting
+  happened** — the event flow (§6) is unchanged.
+- Simple single-signal strategies (e.g. `ma_crossover`) never touch
+  `strategy_voting` at all and pay none of its cost.
+
+### 8.4 Trade Journal
+
+`journal/journal_recorder.py` subscribes to `SignalEvent`, `FillEvent`, and
+`OrderUpdateEvent` on the bus:
+- On the fill that **opens** a new position for a `(strategy_instance, symbol)` pair,
+  create a `journal_entries` row, copying `entry_reason`/`indicators_snapshot`/
+  `market_regime`/`confidence_score` from the triggering `signals` row.
+- On the fill that **closes** the position (quantity returns to zero), finalize the
+  row: `exit_reason`, `pnl`, `fees`, `funding` (accrued from `portfolio.pnl_calculator`),
+  `holding_time_seconds`.
+- `notes` and `screenshot_url` are nullable, operator-filled-in-later fields — no
+  automatic screenshot capture in V1 (would require a charting service dependency
+  not otherwise in scope); the column exists so the dashboard can support attaching
+  one later without a migration.
+- `journal/exporters/{csv,pdf}_exporter.py` render `journal_entries` (optionally
+  filtered by strategy/date range/symbol) to file — triggered from
+  `api/v1/routers/journal.py` and the dashboard's Journal page.
+
+### 8.5 Confidence Scoring
+
+Confidence is a `float` in `[0, 100]` carried on `Signal`/`SignalEvent`/`signals` rows
+and copied into `journal_entries`, visible in the dashboard, included in backtest
+output, and consumable by `analytics.attribution` (e.g., "win rate by confidence
+bucket").
+
+- **Simple strategies** compute confidence from whatever inputs they have — typically
+  a weighted blend of trend quality (ADX magnitude) and regime fit (does the signal
+  direction agree with `market_regime`'s bias?). A strategy with only one indicator
+  is not required to fabricate a "signal agreement" term it has no basis for.
+- **Composite strategies** get the full formula from the review: trend quality,
+  momentum, volume, volatility, market regime fit, funding rate, and **signal
+  agreement** across `strategy_voting`'s sub-generators (`strategy_voting/confidence.py`
+  implements this; it's only invoked inside `voting_engine.combine()`).
+- Confidence is advisory data by default — it flows into Risk only if a strategy
+  instance opts into confidence-scaled sizing (§7); it never silently overrides
+  explicit risk limits.
 
 ---
 
@@ -617,69 +814,69 @@ core.interfaces.exchange_gateway.ExchangeGateway (ABC)
     └── def normalize_symbol(native: str) -> Symbol
 ```
 
-- Implemented per exchange in `execution/adapters/{binance,bybit}_adapter.py` on top
-  of **CCXT Pro** for WS (`watch_*`) and **CCXT** for REST (order placement,
-  balances). CCXT already normalizes most payload shapes; the adapter layer exists so
-  the rest of the platform never imports `ccxt` directly and exchange-specific quirks
-  (funding rate field names, futures vs spot symbol formats, rate-limit buckets) are
-  contained in one place per exchange.
-- **Symbol mapping**: `symbols.symbol_native` stores the exchange's own string;
-  `normalize_symbol` maps it to the platform's canonical `Symbol` value type so
-  strategies reason in exchange-agnostic terms (`BTC/USDT:USDT` perp) while adapters
-  handle exchange string formats.
-- **Rate limiting**: `utils/rate_limiter.py` wraps each adapter's REST calls with a
-  token-bucket matched to the exchange's documented limits; CCXT's built-in throttler
-  is used as the first line of defense, the platform-level limiter is a safety net
-  shared across all workers hitting the same account.
-- **Adding a new exchange** = implement one adapter class + register its symbols;
-  no changes required in `strategies`, `risk`, `portfolio`, or `backtesting`. This is
-  the mechanism that satisfies "multiple exchanges later."
-- **Paper trading** is a third adapter (`execution/adapters/paper_adapter.py`,
-  to be added when that milestone is implemented) that fills orders against live
-  market data with a simulated fill model, satisfying the same `ExchangeGateway`
-  interface — so a strategy instance moves from paper → live by swapping accounts,
-  not code.
+- **V1 ships two implementations**: `execution/adapters/paper_adapter.py` (simulated
+  fills against live Binance market data) and `execution/adapters/binance_adapter.py`
+  (CCXT / CCXT Pro against Binance Futures, testnet first).
+- Built on **CCXT Pro** for WS (`watch_*`) and **CCXT** for REST, exactly as in the
+  original design — the rest of the platform never imports `ccxt` directly.
+- **What adding Bybit later actually requires**, to make good on "minimal work":
+  1. `execution/adapters/bybit_adapter.py` implementing the same `ExchangeGateway`
+     ABC (CCXT already supports Bybit Futures, so this is largely adapter glue, not
+     new integration work).
+  2. `market_data/providers/bybit_futures.py` mirroring `binance_futures.py`'s
+     structure for the WS subscription lifecycle.
+  3. Seed `exchanges`/`symbols` rows for Bybit.
+  4. Register the adapter in `execution/execution_router.py`'s exchange lookup.
+  - **No changes required** in `strategies`, `risk`, `portfolio`, `features`,
+    `market_regime`, `backtesting`, `journal`, or `api` — this is the concrete test
+    of whether the abstraction held, and it's why the ABC is being kept
+    exchange-agnostic in V1 even though only one implementation ships.
+- **Symbol mapping / rate limiting** — unchanged from the original design
+  (`symbols.symbol_native` + `normalize_symbol`; `utils/rate_limiter.py` token-bucket
+  per adapter on top of CCXT's built-in throttler).
+- Paper trading uses the same interface as live, so a strategy instance moves from
+  paper → live by swapping `accounts`, not code (unchanged from original design).
 
 ---
 
 ## 10. Backtesting Architecture
 
-Event-driven (not vectorized) by design, so strategy code is byte-for-byte identical
-between backtest and live:
+Event-driven (not vectorized), unchanged in principle from the original design, now
+also replaying `features` and `market_regime` deterministically:
 
 ```mermaid
 flowchart LR
     HIST[(historical candles/trades\nin Postgres)] --> FEED[backtesting.data_feed]
     FEED --> SIM[event_simulator\n(time-ordered replay)]
-    SIM -->|MarketDataEvent| BUS[in-process event_bus]
+    SIM -->|CandleEvent| BUS[in-process event_bus]
+    BUS --> FEAT[features — same code as live]
+    FEAT --> REG[market_regime — same code as live]
     BUS --> STRAT[strategies — same code as live]
-    STRAT -->|Signal| RISK[risk — same code as live]
+    STRAT -->|Signal w/ confidence| RISK[risk — same code as live]
     RISK -->|OrderIntent| BROKER[broker_simulator]
     BROKER -->|fills w/ slippage+fees+latency| BUS
     BUS --> PORT[portfolio — same code as live]
+    BUS --> JR[journal — same code as live]
     PORT --> CURVE[equity_curve_points]
     CURVE --> METRICS[analytics.performance_metrics]
 ```
 
-- **`broker_simulator`** stands in for `execution/adapters/*` behind the same
-  `ExchangeGateway` interface, so `order_manager` code is also reused, not
-  reimplemented.
-- **`slippage_models.py`** supports pluggable fill assumptions: next-bar-open,
-  volume-participation cap, fixed bps slippage, and orderbook-depth-aware fills when
-  L2 history is available.
-- **Look-ahead bias prevention**: `event_simulator` guarantees strategies only ever
-  observe events with `ts <= current_sim_time`; any repository query issued by a
-  strategy's context object during a backtest is time-boxed to the same cutoff.
-- **Costs modeled**: exchange taker/maker fees (from `symbols`), funding rate accrual
-  for perpetuals, and slippage — all configurable per backtest run and stored on
-  `backtest_runs.params` for reproducibility.
-- **Output**: every backtest run persists `backtest_trades` +
-  `equity_curve_points` + summary stats on `backtest_runs`, so results are queryable
-  and comparable across runs, not just printed to console.
+- `broker_simulator` stands in for `execution/adapters/binance_adapter.py` behind the
+  same `ExchangeGateway` interface (unchanged principle).
+- **Look-ahead bias prevention extends to `features`/`market_regime`**: both are
+  time-boxed by `event_simulator` identically to every other lookback — a strategy
+  cannot query an indicator value computed from candles after the current sim time,
+  and `market_regime`'s cached `MarketState` updates only on simulated candle close,
+  never ahead of it.
+- Costs modeled, output persisted — unchanged from the original design
+  (`backtest_trades`, `equity_curve_points`, summary stats on `backtest_runs`); now
+  additionally, every backtest's `signals` are persisted too, so post-hoc analysis of
+  "which regime/confidence range produced the best trades" works identically for
+  backtests and live history.
 
 ---
 
-## 11. Optimization (Walk-Forward) Architecture
+## 11. Optimization Architecture (V1: Grid Search + Walk-Forward only)
 
 ```
 optimization/walk_forward.py
@@ -689,285 +886,172 @@ optimization/walk_forward.py
     aggregate out-of-sample results only → true performance estimate
 ```
 
-- `param_search.py` supports grid, random, and Bayesian search strategies behind one
-  interface, all driving `backtesting.engine.run`.
-- `overfitting_guards.py` implements deflated Sharpe ratio and a minimum
-  trade-count/sample-size gate before a parameter set is allowed to graduate from
-  backtest → paper.
-- Every walk-forward run is a persisted `optimization_runs` row referencing all its
-  child `backtest_runs`, so the in-sample/out-of-sample split is auditable later —
-  this directly guards against the single biggest failure mode of retail strategy
-  development (overfitting to one backtest).
+- `param_search.py` implements **grid** and **random** search behind one interface
+  in V1. Bayesian search (`scikit-optimize` or similar) is deferred to the roadmap
+  (§20) — the interface is designed so adding it later is a third implementation of
+  the same `SearchStrategy` protocol, not a redesign.
+- `overfitting_guards.py` (deflated Sharpe, minimum trade-count gate) — unchanged
+  from the original design.
+- Every walk-forward run persists as `optimization_runs` referencing its child
+  `backtest_runs`, unchanged.
 
 ---
 
 ## 12. Dashboard Architecture
 
-- Streamlit app (`dashboard/`) is a **pure API client** — it calls `api/` over HTTP
-  and the WS endpoint for live updates; it never imports `models`/`database`/
-  `repositories` directly. This keeps the dashboard deployable as an independent
-  container (or even off-box) and keeps a single authorization boundary (the API) in
-  front of all data.
-- Pages: **Overview** (equity curve, open risk, circuit-breaker status), **Positions**
-  (live positions across exchanges/strategies), **Strategies** (per-strategy
-  performance, start/pause/stop controls calling `api/v1/strategies`), **Backtests**
-  (run history, tearsheet viewer), **Risk** (current limits, recent risk rejections,
-  manual kill-switch).
-- Real-time updates: initial page load hits REST; live deltas subscribe to
-  `api/websockets/live_feed.py`, which itself subscribes to the Redis event bus and
-  fans out to connected dashboard/browser clients.
+Unchanged principle: Streamlit is a pure API client, never imports
+`models`/`database`/`repositories` directly. Pages this revision:
+
+- **Overview** — equity curve, open risk, circuit-breaker status, **current market
+  regime per active symbol**.
+- **Positions** — live positions across strategies.
+- **Strategies** — per-strategy performance, start/pause/stop, **confidence
+  distribution of recent signals**.
+- **Journal** (new) — trade journal table (filter by strategy/symbol/date), entry/exit
+  reasoning, regime-at-entry, confidence, CSV/PDF export buttons.
+- **Backtests** — run history, tearsheet viewer.
+- **Risk** — current limits, recent risk rejections, manual kill-switch.
+
+Real-time updates via `api/websockets/live_feed.py` — unchanged mechanism.
 
 ---
 
 ## 13. Deployment Architecture
 
-```mermaid
-flowchart TB
-    subgraph DockerCompose[docker-compose.yml]
-        PG[(postgres + timescaledb)]
-        RD[(redis)]
-        API[api container\nuvicorn/FastAPI]
-        MDW[market_data_worker]
-        EXW[execution_worker]
-        STW[strategy_worker]
-        DASH[dashboard container\nstreamlit]
-        NOTW[notification_worker]
-    end
-    PG <---> API
-    PG <---> MDW
-    PG <---> EXW
-    RD <--> API
-    RD <--> MDW
-    RD <--> EXW
-    RD <--> STW
-    RD <--> NOTW
-    API <--> DASH
-    MDW <-->|CCXT Pro WS| EXCH[(Binance/Bybit)]
-    EXW <-->|CCXT REST| EXCH
-    NOTW --> TG[Telegram Bot API]
-    NOTW --> DC[Discord Webhook]
-```
+Unchanged topology from the original design (`docker-compose.yml`: `postgres`+
+timescaledb, `redis`, `api`, `market_data_worker`, `execution_worker`,
+`strategy_worker`, `dashboard`, `notification_worker`). `features`/`market_regime`
+run inside `strategy_worker` (they're pure computation triggered by the same candle
+events the strategy worker already consumes — no new container in V1). `journal`
+runs as part of `notification_worker`'s process group (both are lightweight bus
+subscribers persisting to Postgres) — split into its own worker later only if volume
+demands it.
 
-- **Local/staging**: `docker-compose.yml` runs everything on one host, one process
-  per service — simplest operational model, matches current scale.
-- **Process separation rationale**: `market_data_worker` (WS-bound, must never block),
-  `strategy_worker` (CPU for signal computation), and `execution_worker` (latency
-  sensitive REST calls) are separate containers so a slow strategy computation cannot
-  delay order placement, and a market-data reconnect storm cannot starve execution.
-  All communicate only via the Redis event bus — no direct RPC between workers.
-- **Config**: one `.env` per environment (`development`/`staging`/`production`),
-  loaded by `config/settings.py`; never baked into images.
-- **Scaling path**: each worker type is independently horizontally scalable (e.g.
-  multiple `strategy_worker` replicas partitioned by `strategy_instance_id`); DB and
-  Redis are the shared state. A future move to Kubernetes (§19) changes only the
-  orchestration layer, not the application boundaries, because services already
-  communicate over the network (Postgres/Redis), not in-process.
-- **Migrations**: run via a dedicated `migrate` job/init-container (`alembic upgrade
-  head`) before `api`/workers start — never run migrations from application startup
-  code.
+Everything else in this section (process separation rationale, config-per-environment,
+scaling path, migration job) is unchanged from the original design.
 
 ---
 
 ## 14. Security Considerations
 
-- **Secrets**: exchange API keys stored encrypted at rest (`accounts.api_key_encrypted`
-  via Fernet with a key from env/secrets manager, moving to a KMS/Vault in
-  production). Never logged; `utils`/logging middleware redact known secret field
-  names.
-- **Least privilege on exchange keys**: separate keys per environment; live-trading
-  keys scoped to trade-only (no withdrawal permission) at the exchange level — this
-  is an operational control to document in `README.md`, not something the code can
-  enforce, but the `accounts.permissions` field records the intended scope for audit.
-- **API authentication**: FastAPI endpoints behind JWT auth (`api/middleware/auth.py`);
-  the dashboard authenticates as a service client. No unauthenticated route except
-  `/health`.
-- **Network exposure**: only `api/` and `dashboard/` are exposed via a reverse proxy;
-  Postgres/Redis stay on the internal Docker network, never published to a host port
-  in production.
-- **Kill switch access control**: manual circuit-breaker trip is a privileged,
-  audited action (`audit_log`), separate from ordinary strategy start/stop
-  permissions.
-- **Input validation**: every external boundary (API request bodies, exchange WS
-  payloads before normalization) validated through Pydantic — malformed exchange
-  payloads are logged and dropped, never trusted into `core.events` unvalidated.
-- **Dependency hygiene**: `pyproject.toml` pinned versions; GitHub Actions runs a
-  dependency/CVE scan (e.g. `pip-audit`) in CI (§18).
-- **Idempotency**: `orders.client_order_id` unique constraint prevents duplicate
-  order submission on retry (critical given retry/backoff is used throughout
-  execution and network calls to exchanges are not naturally idempotent).
+Unchanged from the original design (§14): encrypted API keys at rest, least-privilege
+exchange keys (trade-only, no withdrawal), JWT-authenticated API, internal-only
+Postgres/Redis network exposure, audited kill-switch access, Pydantic validation at
+every external boundary, dependency CVE scanning, idempotent order submission via
+`client_order_id`. No new attack surface introduced by `features`/`market_regime`/
+`journal` — they're internal read/compute-only consumers of data already flowing
+through the system; `journal`'s exporters are the only new I/O surface (writing files),
+scoped to an authenticated API route.
 
 ---
 
 ## 15. API Design
 
-- **Style**: REST, versioned under `/api/v1`, resource-oriented, JSON:API-flavored
-  envelopes defined in `schemas/common.py` (consistent pagination + error shape).
-- **Routers** (`api/v1/routers/`): `market` (symbols, candles query),
-  `orders` (list/cancel — creation is via strategies/risk, not direct user POST, to
-  keep risk checks mandatory), `positions`, `strategies` (CRUD strategy instances,
-  start/pause/stop), `backtests` (submit run, fetch results/tearsheet), `system`
-  (health, readiness, circuit-breaker status/trip).
-- **WebSocket**: `/ws/live` streams `PortfolioUpdateEvent`/`FillEvent`/`AlertEvent`
-  to authenticated clients (dashboard) — thin bridge over the Redis bus, no business
-  logic in the WS handler itself.
-- **Auto-generated OpenAPI** (`/docs`) is the contract between `dashboard` and `api`
-  and any future external client; `schemas/` are the single source of truth so
-  request/response shapes never drift from documentation.
-- **Error contract**: every domain exception in `core/exceptions.py` maps to a
-  specific HTTP status via a FastAPI exception handler (`api/middleware/`), returning
-  a consistent `{error_code, message, details}` body — never a raw stack trace.
+Unchanged style (REST, versioned `/api/v1`, resource-oriented, consistent envelopes).
+New routers this revision: `api/v1/routers/signals.py` (signal + confidence history,
+read-only), `api/v1/routers/regime.py` (current/historical market regime per symbol),
+`api/v1/routers/journal.py` (query + CSV/PDF export). Error contract, OpenAPI
+generation, WebSocket design — unchanged from the original design.
 
 ---
 
 ## 16. Logging Design
 
-- Structured JSON logging everywhere (stdlib `logging` + a JSON formatter, or
-  `structlog`), configured centrally in `config/logging.py` — no module configures
-  its own handlers.
-- Every log line includes: `ts`, `level`, `logger`, `correlation_id` (propagated from
-  the originating `core.events` event through the whole pipeline — see §6),
-  `strategy_instance_id` where applicable, `message`, structured `extra` fields.
-- Log levels: `DEBUG` for local dev, `INFO` baseline in staging/production,
-  `WARNING`+ for risk rejections/reconnects, `ERROR` for failed order placement/DB
-  errors, `CRITICAL` reserved for circuit-breaker trips.
-- Secrets/PII redaction filter applied globally before any handler.
-- Output: stdout (container-native); a later milestone wires shipping to a
-  centralized store (Loki/ELK) — the JSON format is chosen now specifically so that
-  addition requires no application changes later.
+Unchanged from the original design. `correlation_id` now also ties a `SignalEvent`
+(with its confidence/reasoning) through to the `journal_entries` row it produced, so
+tracing "why did we enter this trade" from logs alone is possible end-to-end.
 
 ---
 
 ## 17. Error Handling Strategy
 
-- **Exception hierarchy** (`core/exceptions.py`): `DomainError` base, with subtypes
-  `ValidationError`, `RiskRejectedError`, `InsufficientBalanceError`,
-  `ExchangeError` (→ `RateLimitError`, `OrderRejectedError`, `ConnectivityError`),
-  `ReconciliationMismatchError`. Every layer raises these, never bare exceptions.
-- **Retry policy** (`utils/retry.py`): exponential backoff with jitter for
-  transient `ExchangeError`/`ConnectivityError` on REST calls and WS reconnects;
-  explicitly **not** retried: `OrderRejectedError` (would double-submit) — those
-  surface immediately to `risk`/`notifications`.
-- **Circuit breaking on integration failure**: repeated `ExchangeError` from one
-  adapter within a window trips a per-exchange breaker (distinct from the
-  portfolio-risk circuit breaker in §7) that pauses order routing to that exchange
-  only, while other exchanges keep operating.
-- **API layer**: FastAPI exception handlers translate `DomainError` subtypes to HTTP
-  4xx/5xx with the consistent error envelope (§15); unhandled exceptions are caught
-  by a top-level handler that logs full context and returns a generic 500 (never
-  leaks internals to the client).
-- **Background workers**: each event-bus consumer wraps handling in a
-  try/except that logs + emits an `AlertEvent` on failure rather than crashing the
-  worker process — one bad event must not take down the market-data/execution loop.
-- **Dead-letter handling**: events that fail processing after retries are persisted
-  to a `failed_events` outbox (added at the reliability-hardening milestone) for
-  manual/automated replay instead of being silently dropped.
+Unchanged from the original design (§17: exception hierarchy, retry policy,
+per-exchange circuit breaking, API error mapping, dead-letter handling for failed
+events). `features`/`market_regime` failures (e.g., insufficient history to compute
+an indicator) raise a specific `InsufficientDataError` subtype of `DomainError` —
+a strategy's `on_market_data` catching this should treat it as "no signal this bar,"
+not crash the worker.
 
 ---
 
 ## 18. Testing Strategy
 
-Pyramid, mirroring `tests/unit|integration|e2e`:
-
-- **Unit** (`tests/unit/`): pure-logic tests with all boundaries mocked —
-  strategies (feed synthetic `MarketDataEvent`s, assert `Signal`s), risk calculators,
-  position sizing, PnL math, slippage models. Fast, run on every commit.
-- **Integration** (`tests/integration/`): real Postgres + Redis via
-  docker-compose test stack (or testcontainers), exercising repositories, Alembic
-  migrations, the event bus, and API routes end-to-end against a test DB.
-- **E2E** (`tests/e2e/`): full paper-trading loop against exchange **testnets**
-  (Binance/Bybit testnet), run less frequently (nightly/manual) since they depend on
-  external systems.
-- **Backtest regression tests**: golden-dataset fixtures with known expected metrics
-  (Sharpe, trade count, final equity) so a refactor of `backtesting.engine` that
-  silently changes results fails CI.
-- **Property-based tests** (Hypothesis) for critical numeric code: position sizing
-  never exceeds configured risk limits, PnL calculation is invariant under
-  buy/sell order permutation for the same fills, etc.
-- **Coverage gate**: enforced in CI for `core/`, `risk/`, `portfolio/`,
-  `backtesting/` specifically (the modules where a silent bug is costliest) rather
-  than a single blanket repo-wide number.
-- **Import-boundary tests**: a lint rule (import-linter or a small custom AST check)
-  asserting `strategies/` never imports `execution`/`database`/`api`, enforcing the
-  Clean Architecture rule from §2/§4 automatically.
+Unchanged pyramid (`tests/unit|integration|e2e`, golden-dataset backtest regression,
+property-based tests for critical numeric code, coverage gate on the highest-risk
+modules). This revision adds `features/` and `market_regime/` to that coverage-gated
+set (indicator correctness against known reference values; regime classification
+against hand-labeled historical fixtures — e.g., a known trending period must
+classify as TRENDING). Import-boundary check updated per §2: `strategies/` is now
+allowed to import `features`/`market_regime`/`strategy_voting`, still forbidden from
+`execution`/`database`/`api`.
 
 ---
 
 ## 19. CI/CD Pipeline
 
-`.github/workflows/ci.yml` (runs on every PR and push to main):
-
-1. **Setup** — checkout, set up Python 3.12, cache `uv`/pip.
-2. **Lint & format** — `ruff check .`, `black --check .`.
-3. **Type check** — `mypy .`.
-4. **Import-boundary check** — Clean Architecture dependency rule enforcement (§18).
-5. **Unit tests** — `pytest tests/unit --cov`.
-6. **Integration tests** — spin up `postgres`/`redis` as GitHub Actions service
-   containers, run `alembic upgrade head`, `pytest tests/integration`.
-7. **Dependency audit** — `pip-audit`.
-8. **Backtest regression suite** — golden-dataset comparison (§18).
-
-`.github/workflows/docker-build.yml` (on merge to `main`):
-9. Build `Dockerfile.api`/`Dockerfile.worker`/`Dockerfile.dashboard`, tag with commit
-   SHA + `latest`, push to registry.
-
-`.github/workflows/release.yml` (on version tag):
-10. Re-run full CI, build + push versioned images, generate changelog, create GitHub
-    Release. Deployment to staging/production is a separate, manually-triggered or
-    approval-gated job — this platform moves real money, so no tag automatically
-    deploys to production without an explicit approval step.
-
-E2E tests against exchange testnets run on a schedule (nightly), not on every PR,
-since they're slower and depend on third-party uptime.
+Unchanged from the original design (§19: lint/format/typecheck → import-boundary
+check → unit → integration (Postgres/Redis service containers) → dependency audit →
+backtest regression suite → Docker build on merge → tag-triggered release with
+manual approval gate before production deploy).
 
 ---
 
 ## 20. Future Roadmap
 
-Beyond the milestones in `TASKS.md`, directional future work:
+Deferred out of V1 by this revision, plus the original roadmap items:
 
-- **More exchanges**: OKX, Deribit (options), Hyperliquid — validates the exchange
-  abstraction (§9) holds up beyond the first two.
-- **Multi-account / multi-tenant**: support multiple funds/users with isolated risk
-  budgets and reporting on one deployment.
-- **Low-latency execution path**: colocated execution service, WebSocket order
-  entry where exchanges support it, reduced REST round-trips for latency-sensitive
-  strategies.
-- **FIX protocol support** for venues that offer it, as a new `execution/adapters/`
-  implementation behind the same `ExchangeGateway` interface.
-- **Distributed strategy execution**: move from Redis pub/sub to Kafka if
-  event volume/replay/consumer-group needs outgrow Redis Streams.
-- **ML/AI-driven research loop maturation**: `ai_research/` grows from
-  scaffold-generation into automated hypothesis → backtest → walk-forward → report
-  cycles with human-in-the-loop approval gates before any AI-originated strategy
-  reaches paper trading.
-- **Compliance/audit module**: trade reporting exports, position/exposure reports
-  formatted for regulatory or investor reporting.
-- **Kubernetes deployment**: once horizontal scaling needs exceed single-host
-  docker-compose, move workers to k8s Deployments/HPA — no application-layer changes
-  needed since workers already only communicate via Postgres/Redis (§13).
-- **Mobile companion app**: read-only portfolio/alerts view consuming the same
-  `api/` used by the dashboard.
-- **Options/derivatives strategy support**: extend `core.types`/`models` for
-  options greeks, funding-rate arbitrage strategies across the multi-exchange
-  abstraction.
+- **Bybit Futures** (and further exchanges: OKX, Deribit, Hyperliquid) — implement
+  `execution/adapters/bybit_adapter.py` + `market_data/providers/bybit_futures.py`
+  per the exact checklist in §9; this is the first concrete validation that the
+  exchange abstraction generalizes.
+- **Bayesian optimization** — third `SearchStrategy` implementation in
+  `optimization/param_search.py` alongside grid/random.
+- **`market_regime/sentiment_filter.py`** and a broader statistical/ML regime
+  classifier (e.g., Hidden Markov Model regime-switching) as an upgrade path beyond
+  V1's rule-based thresholds — natural companion to the AI research phase below,
+  since sentiment ingestion and LLM-assisted analysis share a data-pipeline need.
+- **AI-assisted strategy research** (`ai_research/`) — LLM client, strategy
+  generator, research agent loop (hypothesis → backtest → walk-forward → report).
+  Plugs in at exactly one point: it produces `strategies/` plugins conforming to
+  `core.interfaces.strategy.Strategy` (or `CompositeStrategy`/`SignalGenerator`),
+  identical in shape to hand-written strategies — no redesign of `strategies/`,
+  `risk/`, `portfolio/`, or `backtesting/` needed when this phase starts. Human
+  approval gate before any AI-originated strategy reaches paper trading.
+- **Multi-account / multi-tenant** support.
+- **Low-latency execution path** (colocation, WS order entry where available).
+- **FIX protocol support** for venues that offer it, as another `ExchangeGateway`
+  implementation.
+- **Distributed strategy execution** — move from Redis pub/sub/Streams to Kafka if
+  event volume/replay/consumer-group needs outgrow Redis.
+- **Compliance/audit module** — trade/exposure reporting exports.
+- **Kubernetes deployment** once horizontal scaling needs exceed single-host
+  docker-compose.
+- **Mobile companion app** — read-only portfolio/journal/alerts view over the
+  existing `api/`.
+- **Options/derivatives strategy support** — extend `core.types`/`models` for
+  options greeks, funding-rate arbitrage across the multi-exchange abstraction.
 
 ---
 
-## Cross-Cutting Design Principles (summary)
+## Cross-Cutting Design Principles (summary, updated)
 
-1. **One event bus, two bus backends** (in-process for backtest determinism, Redis
-   for live process separation) — strategies/risk/portfolio code never changes
-   between backtest and live.
-2. **Ports and adapters**: `core/interfaces` are the only contracts `strategies`,
-   `risk`, `portfolio` depend on; `execution/adapters` and
-   `backtesting/broker_simulator` are interchangeable implementations of
-   `ExchangeGateway`.
-3. **Risk limits as data**: tunable without redeploying, always audited.
-4. **The dashboard is just an API client**: no privileged direct DB access, so the
-   authorization boundary is singular.
-5. **Everything time-boxed and correlation-tracked**: from a market tick to the
-   resulting fill to the resulting alert, one `correlation_id` ties the whole chain
-   together in logs and `audit_log`.
+1. **One event bus, two bus backends** — strategies/risk/portfolio/journal code never
+   changes between backtest and live.
+2. **Ports and adapters** — `core/interfaces` are the only contracts `strategies`,
+   `risk`, `portfolio` depend on; adapters and simulators are interchangeable
+   implementations.
+3. **Risk limits as data** — tunable without redeploying, always audited.
+4. **The dashboard is just an API client** — singular authorization boundary.
+5. **Everything time-boxed and correlation-tracked** — from a market tick to the
+   resulting fill to the resulting journal entry, one `correlation_id` ties the chain
+   together.
+6. **New this revision — compute-once, consume-many**: `features/` exists so N
+   strategies never recompute the same indicator; it's a cache-and-share layer, not
+   a new mandatory pipeline stage.
+7. **New this revision — composability over mandatory gates**: `strategy_voting/`
+   and `market_regime/` are things a strategy can *use*, not things every signal must
+   *pass through*. This is what keeps V1 simple for simple strategies while still
+   making the richer patterns available.
 
 See `TASKS.md` for the milestone-by-milestone implementation plan derived from this
 architecture. No implementation should begin until this document is reviewed and

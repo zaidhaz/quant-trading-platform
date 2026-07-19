@@ -11,6 +11,17 @@ transparency gap), all with regression tests. Test suite grew from 158 to 196
 tests, all passing; ruff/black/mypy clean; a real backtest re-run end-to-end via
 the CLI after every fix.
 
+**Update — external validation and stress testing (see §5):** before implementing
+the first production strategy, this engine was additionally cross-validated
+against Backtrader (an established, independently-developed backtesting library)
+and put through a dedicated stress-test suite covering missing data, duplicate
+timestamps, out-of-order events, flash crashes, extreme gaps, zero-volume bars, and
+corrupted inputs. Two more real issues were found and fixed (slippage not clamped
+to a bar's own trading range; `final_equity` could be inconsistent with
+`closed_trades` after a forced close), and an OHLCV validation gate was added so
+corrupted data is rejected immediately rather than silently propagating into
+misleading results. Test suite: 196 → 241 tests.
+
 ---
 
 ## 1. Findings and fixes
@@ -257,9 +268,13 @@ explicitly demonstrates 100x implied leverage sailing through an unconfigured
 - **PDF journal export is a stub** (raises `NotImplementedError`) — needs a
   rendering dependency not currently justified for this milestone. CSV export is
   fully functional.
-- **Data quality validation beyond gap detection** (malformed rows, zero-volume
-  bars, outlier prices from bad exchange data) is not implemented — `find_gaps()`
-  only detects *missing* timestamps, not corrupt values at present ones.
+- **Data quality validation beyond structural sanity.** `market_data.historical.validation.validate_candles()`
+  (added in §5) now rejects duplicate/out-of-order timestamps, NaN/non-positive
+  prices, negative volume, and `high < low`/out-of-range open-close — but it cannot
+  catch a value that's *structurally valid and simply wrong* (e.g. a real exchange
+  outlier/fat-finger print that happens to still satisfy `low <= open,close <= high`).
+  That class of error is out of scope for structural validation and would need
+  statistical outlier detection against neighboring bars, not attempted here.
 - **Not yet run against real Binance data** — this development sandbox has no
   outbound network access to Binance's API (confirmed via a direct request, which
   returned a proxy 403). Every fix in this audit was validated against synthetic
@@ -269,3 +284,55 @@ explicitly demonstrates 100x implied leverage sailing through an unconfigured
 - **Database persistence** (`TASKS.md` Phase A4/A5) is still not implemented — no
   Postgres was available in this sandbox to test against; this audit did not
   revisit that decision.
+
+## 5. External validation and stress testing (this update)
+
+Performed as a follow-up gate before implementing the first production strategy —
+"trust but verify" applied to the engine itself, using a source of truth outside
+this codebase, plus adversarial inputs the earlier audit's own tests didn't target.
+
+### 5.1 Cross-validation against Backtrader
+
+Full write-up: [`docs/BACKTRADER_COMPARISON.md`](BACKTRADER_COMPARISON.md).
+Summary: under identical data/fees/slippage and a simple long-only SMA-crossover
+benchmark (indicator signals precomputed once and fed identically into both
+engines, isolating execution/accounting mechanics from indicator computation),
+every round-trip trade both engines complete matches to float64 precision across 4
+tested seeds. This also independently confirmed the §1.1 execution-timing fix
+matches Backtrader's own default behavior. Two real issues were found and fixed:
+
+- **Slippage wasn't clamped to a bar's own `[low, high]` range** — an aggressive
+  slippage setting on a tight-range bar could fill outside any price the market
+  actually traded that bar. `BrokerSimulator.fill()` now clamps.
+- **`final_equity`/`equity_curve[-1]` could be inconsistent with `closed_trades`**
+  whenever a backtest ended with an open position — the forced close's fee/slippage
+  was reflected in `closed_trades` but not in the already-recorded equity point.
+  Now synced (`_sync_last_equity_point_to_realized_cash()`).
+
+### 5.2 Stress-test suite
+
+`tests/unit/backtesting/test_stress.py` (19 tests) covers: sparse-but-valid data
+(gaps), duplicate/out-of-order timestamps, flash crashes (including a same-bar
+crash-and-recover, and a crash severe enough to trigger ruin on an oversized
+position), multi-month gaps between bars, zero-volume bars (including the VWAP
+0/0 → NaN case specifically), and corrupted inputs (NaN price, negative price,
+`high < low`, negative volume, out-of-range close, infinite price).
+
+Standard held: reject bad input loudly and immediately (before any simulation
+work happens), or — for conditions that are extreme but legitimate market
+behavior, not corrupted data — complete the run without crashing and without
+producing NaN/inf/nonsensical output. All 19 pass; no engine-behavior changes were
+needed beyond the OHLCV validation gate below (the engine itself, after the
+original audit's fixes, already handled gaps/flash-crashes/zero-volume correctly).
+
+### 5.3 Added: OHLCV validation gate
+
+`market_data/historical/validation.py`'s `validate_candles()` runs inside
+`DataFeed.from_candles()` — the one chokepoint every path into the engine goes
+through (direct construction, `DataFeed.load()`, walk-forward window slicing) —
+and rejects: duplicate timestamps, out-of-order timestamps, NaN or non-positive
+prices, NaN or negative volume, `high < low`, and open/close outside `[low, high]`.
+Deliberately does *not* check for gaps (missing bars) — that remains
+`HistoricalDataset.ensure_range()`'s job (§1.2 of this report), which has its own
+intentional `allow_gaps=True` escape hatch that a blanket gap-check here would
+have broken.

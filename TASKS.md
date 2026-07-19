@@ -20,6 +20,17 @@ signal/execution look-ahead-adjacent bug in the backtest engine — 1 high, 2 me
 [`docs/VALIDATION_REPORT.md`](docs/VALIDATION_REPORT.md) for the full findings,
 fixes, what was verified, and what assumptions/limitations remain.
 
+**Pre-first-strategy validation completed:** before implementing any production
+strategy, the engine was cross-validated against Backtrader (an established
+backtesting library — see [`docs/BACKTRADER_COMPARISON.md`](docs/BACKTRADER_COMPARISON.md),
+every completed round-trip trade matches to float precision) and put through a
+dedicated stress-test suite (missing data, duplicate/out-of-order timestamps,
+flash crashes, extreme gaps, zero-volume bars, corrupted inputs — 19 tests, all
+passing). Found and fixed 2 more real issues (slippage not clamped to a bar's
+trading range; `final_equity` inconsistent with `closed_trades` after a forced
+close) and added an OHLCV validation gate. Test suite: 196 → 241 tests. See
+`docs/VALIDATION_REPORT.md` §5 for the summary.
+
 ---
 
 # PART A — Research & Backtesting Engine (build first)
@@ -167,6 +178,9 @@ connectivity, no dashboard.
 - [x] A11.7 Golden-dataset regression test fixture + CI check.
 - [x] A11.8 `scripts/run_backtest.py` CLI: `--strategy --symbol --timeframe --start --end --config`.
 - [x] A11.9 Integration test: full backtest run on fixture data for both example strategies, long and short, verify fees/funding/slippage all reduce net PnL as expected.
+- [x] A11.10 Cross-validate engine execution/accounting against an established backtesting library (Backtrader) under identical data/fees/slippage — see `docs/BACKTRADER_COMPARISON.md`.
+- [x] A11.11 Stress-test suite: missing data, duplicate/out-of-order timestamps, flash crashes, extreme gaps, zero-volume bars, corrupted inputs — engine fails safely rather than producing misleading results — see `tests/unit/backtesting/test_stress.py`.
+- [x] A11.12 OHLCV validation gate (`market_data/historical/validation.py`) wired into `DataFeed.from_candles`.
 
 ## Phase A12 — Analytics
 

@@ -11,6 +11,7 @@ from core.types import Symbol
 from features.indicators import derivatives
 from market_data.historical.candles_dataset import CandlesDataset
 from market_data.historical.funding_rate_dataset import FundingRateDataset
+from market_data.historical.validation import validate_candles
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ class DataFeed:
         candles: pd.DataFrame,
         funding_df: pd.DataFrame | None = None,
     ) -> DataFeed:
+        validate_candles(candles, context=f"candles for {symbol} [{timeframe}]")
         funding_df = (
             funding_df if funding_df is not None else pd.DataFrame(columns=["funding_rate"])
         )

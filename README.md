@@ -8,11 +8,14 @@ platform** — see `docs/ARCHITECTURE.md` Revision 2 for why.
 execution, API, dashboard) has not been started — see `TASKS.md` for the phase gate.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design,
-[`TASKS.md`](TASKS.md) for the milestone-by-milestone plan and current status, and
+[`TASKS.md`](TASKS.md) for the milestone-by-milestone plan and current status,
 [`docs/VALIDATION_REPORT.md`](docs/VALIDATION_REPORT.md) for the pre-Part-B
 correctness audit (backtesting logic, data handling, execution simulation, risk
 calculations, statistical methodology — what was found, fixed, verified, and what
-still remains an open assumption or limitation).
+still remains an open assumption or limitation), and
+[`docs/BACKTRADER_COMPARISON.md`](docs/BACKTRADER_COMPARISON.md) for an external
+cross-validation of the backtest engine against Backtrader, an established
+backtesting library.
 
 ## Quickstart (research engine)
 
@@ -32,9 +35,13 @@ python scripts/run_backtest.py --strategy ma_crossover --symbol BTC/USDT \
     --params '{"fast_period": 10, "slow_period": 30}' \
     --journal-csv journal.csv
 
-make test   # 196 unit tests
+make test   # 241 tests
 make lint   # ruff + black --check
 make typecheck  # mypy
+
+# Optional: cross-validate against Backtrader (an established backtesting library)
+pip install -e ".[validation]"
+pytest tests/integration/test_backtrader_comparison.py -v
 ```
 
 Two example strategies ship out of the box: `ma_crossover` and `mean_reversion`

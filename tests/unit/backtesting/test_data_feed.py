@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from backtesting.data_feed import DataFeed
-from core.exceptions import DataGapError
+from core.exceptions import DataGapError, ValidationError
 from core.types import Symbol
 from market_data.historical.dataset import HistoricalDataset
 from market_data.historical.parquet_store import ParquetStore
@@ -74,3 +74,18 @@ def test_load_degrades_gracefully_on_unfillable_funding_gap(tmp_path, caplog) ->
     assert len(feed.candles) > 0  # candles still loaded fine
     assert feed.funding_events.isna().all()  # funding just absent, not fatal
     assert any("Funding rate data incomplete" in r.message for r in caplog.records)
+
+
+def test_from_candles_rejects_corrupted_data() -> None:
+    df = pd.DataFrame(
+        {
+            "open": [100.0, 100.0],
+            "high": [101.0, 101.0],
+            "low": [99.0, 99.0],
+            "close": [100.0, float("nan")],  # corrupted
+            "volume": [10.0, 10.0],
+        },
+        index=pd.date_range("2024-01-01", periods=2, freq="1h", tz="UTC"),
+    )
+    with pytest.raises(ValidationError):
+        DataFeed.from_candles(SYMBOL, "1h", df)

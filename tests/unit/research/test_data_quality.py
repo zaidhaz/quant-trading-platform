@@ -78,13 +78,13 @@ def test_volume_outlier_detected() -> None:
     assert report.volume_outlier_rows >= 1
 
 
-def test_open_interest_reported_as_unavailable_not_fabricated() -> None:
+def test_candles_report_notes_open_interest_is_checked_separately() -> None:
     df = _clean_hourly_df()
 
     _, report = dq.repair_and_check_candles("BTCUSDT", "1h", df)
 
     assert "N/A" in report.open_interest_status
-    assert "OpenInterestDataset" in report.open_interest_status
+    assert "repair_and_check_open_interest" in report.open_interest_status
 
 
 def test_funding_out_of_range_is_flagged() -> None:
@@ -96,6 +96,33 @@ def test_funding_out_of_range_is_flagged() -> None:
 
     assert report.funding_out_of_range_rows == 1
     assert not report.clean
+
+
+def test_open_interest_clean_data_reports_clean_and_sets_own_status() -> None:
+    index = pd.date_range("2024-01-01", periods=20, freq="5min", tz="UTC")
+    df = pd.DataFrame(
+        {"sum_open_interest": 1000.0, "sum_open_interest_value": 50_000_000.0}, index=index
+    )
+
+    _, report = dq.repair_and_check_open_interest("BTCUSDT", df)
+
+    assert report.clean
+    assert "20 rows" in report.open_interest_status
+    assert "N/A" not in report.open_interest_status
+
+
+def test_open_interest_negative_value_is_flagged_not_repaired() -> None:
+    index = pd.date_range("2024-01-01", periods=5, freq="5min", tz="UTC")
+    df = pd.DataFrame(
+        {"sum_open_interest": 1000.0, "sum_open_interest_value": 50_000_000.0}, index=index
+    )
+    df.iloc[2, df.columns.get_loc("sum_open_interest")] = -1.0
+
+    working, report = dq.repair_and_check_open_interest("BTCUSDT", df)
+
+    assert report.negative_volume_rows == 1
+    assert not report.clean
+    assert working.iloc[2]["sum_open_interest"] == -1.0  # flagged, never silently fixed
 
 
 def test_format_report_is_human_readable() -> None:

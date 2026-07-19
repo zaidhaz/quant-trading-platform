@@ -51,8 +51,9 @@ class DataQualityReport:
     volume_outlier_rows: int = 0
     funding_out_of_range_rows: int = 0
     open_interest_status: str = (
-        "N/A — no OpenInterestDataset exists in this codebase "
-        "(see docs/strategies/LIQUIDITY_EXHAUSTION_REVERSAL.md §0)"
+        "N/A for this dataset -- checked separately via repair_and_check_open_interest() "
+        "(see docs/DATA_LAYER.md; open interest is capped to Binance's ~30-day retention "
+        "window regardless, see docs/strategies/LIQUIDITY_EXHAUSTION_REVERSAL.md §0)"
     )
     issues: list[str] = field(default_factory=list)
 
@@ -228,7 +229,7 @@ def repair_and_check_open_interest(
     ~30-day retention cap (`OPEN_INTEREST_MAX_LOOKBACK_DAYS`) — any request for
     data older than that legitimately returns nothing, which is a documented
     limitation, not a data quality defect."""
-    return _repair_and_check_series(
+    working, report = _repair_and_check_series(
         symbol,
         "open_interest",
         str(expected_freq),
@@ -236,6 +237,12 @@ def repair_and_check_open_interest(
         expected_freq,
         ("sum_open_interest", "sum_open_interest_value"),
     )
+    report.open_interest_status = (
+        f"{'empty' if working.empty else f'{len(working)} rows'} -- see this report's own "
+        "gap/NaN/negative-value fields above, and OPEN_INTEREST_MAX_LOOKBACK_DAYS for the "
+        "~30-day retention cap"
+    )
+    return working, report
 
 
 def format_report(report: DataQualityReport) -> str:

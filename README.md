@@ -24,12 +24,19 @@ Concepts" jargon into precise, testable, market-microstructure-grounded rules.
 
 [`docs/research/LIQUIDITY_EXHAUSTION_REVERSAL_LONG_HORIZON_REPORT.md`](docs/research/LIQUIDITY_EXHAUSTION_REVERSAL_LONG_HORIZON_REPORT.md)
 is a full long-horizon research pipeline (data quality gating, regime analysis,
-rolling out-of-sample validation, Monte Carlo, ±10% parameter-robustness sweeps)
-run against **synthetic** BTCUSDT/ETHUSDT history — `fapi.binance.com` is blocked
-by this sandbox's network policy (confirmed directly, see that report's §0), so
-the pipeline itself was built and validated end-to-end instead of stalling or
-fabricating a real result. `scripts/run_research_pipeline.py` reproduces it
-against real data with zero code changes once network access exists.
+rolling out-of-sample validation, Monte Carlo, ±10% parameter-robustness sweeps,
+sample-size and R-multiple-distribution reporting, a pre-registered scientific
+decision rule) run against **synthetic** BTCUSDT/ETHUSDT history — `fapi.binance.com`
+is blocked by this sandbox's network policy (confirmed directly, see that report's
+§0), so the pipeline itself was built and validated end-to-end instead of stalling
+or fabricating a real result. See [`docs/DATA_LAYER.md`](docs/DATA_LAYER.md) for the
+full Binance data layer (OHLCV, funding, mark price, premium index, open interest,
+exchange info — every endpoint the strategy needs, with documented history-depth
+limits), its never-hardcode-a-date-range earliest-detection mechanism, and
+`scripts/sync_historical_data.py`'s production incremental sync. Both
+`scripts/sync_historical_data.py` and `scripts/run_research_pipeline.py` (via
+`--data-source real`) need zero code changes to run for real the moment network
+access exists — `research/data_loader.py` is the single real/synthetic switch.
 
 ## Quickstart (research engine)
 
@@ -43,6 +50,12 @@ python scripts/download_historical_data.py --symbol BTC/USDT --timeframe 1h \
 python scripts/download_historical_data.py --symbol BTC/USDT \
     --start 2023-01-01 --end 2024-01-01 --dataset funding_rate
 
+# Or sync the FULL data layer (candles across every timeframe, funding, mark
+# price, premium index, open interest) with no hardcoded date range —
+# auto-detects each symbol's real earliest available data, incremental and
+# resumable on rerun. See docs/DATA_LAYER.md.
+python -m scripts.sync_historical_data --symbols BTCUSDT ETHUSDT
+
 # Run a backtest
 python scripts/run_backtest.py --strategy ma_crossover --symbol BTC/USDT \
     --timeframe 1h --start 2023-01-01 --end 2024-01-01 \
@@ -54,7 +67,7 @@ python scripts/run_backtest.py --strategy liquidity_exhaustion_reversal \
     --symbol BTC/USDT --timeframe 1h --start 2023-01-01 --end 2024-01-01 \
     --journal-csv journal.csv
 
-make test   # 312 tests
+make test   # 362 tests
 make lint   # ruff + black --check
 make typecheck  # mypy
 
@@ -62,8 +75,11 @@ make typecheck  # mypy
 pip install -e ".[validation]"
 pytest tests/integration/test_backtrader_comparison.py -v
 
-# Long-horizon research pipeline (synthetic data in this sandbox, see above)
+# Long-horizon research pipeline. --data-source defaults to "auto" (real data
+# first, synthetic fallback if unreachable, as in this sandbox); use "real" to
+# fail loudly instead of falling back, or "synthetic" for methodology testing.
 python -m scripts.run_research_pipeline
+python -m scripts.run_research_pipeline --data-source real
 ```
 
 Three strategies ship out of the box: `ma_crossover` and `mean_reversion`
@@ -75,10 +91,13 @@ three implement the full `Strategy` interface (`detect_setup` / `check_entry` /
 interchangeable in the backtesting engine.
 
 **Not yet run against real Binance data** — this development environment has no
-outbound network access to Binance's API. The pipeline has been validated
-end-to-end against synthetic data shaped like a real download (see
-`TASKS.md` Phase A15). Run the quickstart above from an environment with network
-access to get a real validation.
+outbound network access to Binance's API (confirmed directly, see
+`docs/DATA_LAYER.md`). The full data layer and pipeline are built and validated
+end-to-end against mocked/synthetic data shaped like a real download (see
+`TASKS.md` Phases A15/A18). Run the quickstart above from an environment with
+network access — `sync_historical_data.py` and `run_research_pipeline.py
+--data-source real` need no code changes — to get the real, definitive
+validation.
 
 **Database persistence not yet implemented** (`TASKS.md` Phase A4/A5) — there was no
 Postgres available to test against in this environment. Everything through Phase A14

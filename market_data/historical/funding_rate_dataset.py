@@ -44,3 +44,8 @@ class FundingRateDataset(HistoricalDataset):
 
     def expected_frequency(self, timeframe: str | None) -> pd.Timedelta:
         return DEFAULT_FUNDING_INTERVAL
+
+    def find_earliest_available(
+        self, symbol: Symbol, timeframe: str | None = None
+    ) -> datetime | None:
+        return self._client.find_earliest_funding_time(symbol.native())

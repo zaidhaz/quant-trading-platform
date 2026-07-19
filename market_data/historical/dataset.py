@@ -9,7 +9,7 @@ without touching `ParquetStore`, `backtesting/data_feed.py`, or anything downstr
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pandas as pd
 
@@ -64,6 +64,40 @@ class HistoricalDataset(ABC):
     @abstractmethod
     def expected_frequency(self, timeframe: str | None) -> pd.Timedelta:
         """Nominal spacing between consecutive rows, used for gap detection."""
+
+    def find_earliest_available(
+        self, symbol: Symbol, timeframe: str | None = None
+    ) -> datetime | None:
+        """The real earliest timestamp this source has data for `symbol`
+        (listing date, effectively) — never a hardcoded assumption. Returns
+        None if the source has no data at all for this symbol. Not every
+        dataset overrides this (the default raises rather than silently
+        returning something wrong); see `candles_dataset.py` /
+        `funding_rate_dataset.py` / `mark_price_dataset.py` /
+        `premium_index_dataset.py` for real implementations, and
+        `open_interest_dataset.py` for why open interest's version is
+        deliberately not a "true earliest" but a documented retention floor."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement find_earliest_available() "
+            "— override it or pass an explicit start date to ensure_range()."
+        )
+
+    def sync_full_history(
+        self, symbol: Symbol, timeframe: str | None = None, end: datetime | None = None
+    ) -> pd.DataFrame:
+        """The "never hardcode a date range" entry point: auto-detects the
+        earliest available start via `find_earliest_available()`, then syncs
+        through `end` (default: now) via the existing incremental, gap-only,
+        resumable `ensure_range()`. Raises `DataGapError` if the source has no
+        data for this symbol at all (distinct from a partial-history gap)."""
+        earliest = self.find_earliest_available(symbol, timeframe)
+        if earliest is None:
+            raise DataGapError(
+                f"{self.name} has no data available at all for {symbol} [{timeframe}] "
+                "— nothing to sync (not a gap, an absence)"
+            )
+        end_dt = end or datetime.now(UTC)
+        return self.ensure_range(symbol, earliest, end_dt, timeframe)
 
     def store_data(self, symbol: Symbol, df: pd.DataFrame, timeframe: str | None = None) -> None:
         self.store.write(self.name, symbol, df, timeframe)

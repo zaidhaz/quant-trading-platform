@@ -21,6 +21,7 @@ _VOLUME_ANOMALY_MULTIPLE = 20.0
 _MAINTENANCE_GAP_MAX_MULTIPLE = (
     3.0  # gaps up to this many expected intervals: "short/maintenance-like"
 )
+_DEFAULT_OPEN_INTEREST_FREQ = pd.Timedelta(minutes=5)
 
 
 @dataclass(slots=True)
@@ -147,9 +148,21 @@ def repair_and_check_candles(
     return working, report
 
 
-def repair_and_check_funding(
-    symbol: str, df: pd.DataFrame
+def _repair_and_check_series(
+    symbol: str,
+    dataset: str,
+    timeframe_label: str,
+    df: pd.DataFrame,
+    expected_freq: pd.Timedelta,
+    numeric_columns: tuple[str, ...],
 ) -> tuple[pd.DataFrame, DataQualityReport]:
+    """Shared repair/check core for any non-OHLC time series (funding rate,
+    open interest, ...): sort + dedupe (repaired), then gap detection and
+    NaN/negative-value flagging (never repaired) on the given numeric
+    columns. OHLC-shaped datasets (candles, and by extension mark price /
+    premium index, which share the same kline row shape) use
+    `repair_and_check_candles` instead, since they need the OHLC-specific
+    invariant checks this generic path doesn't do."""
     rows_before = len(df)
     was_unsorted = not df.index.is_monotonic_increasing
     working = df.sort_index()
@@ -159,8 +172,8 @@ def repair_and_check_funding(
 
     report = DataQualityReport(
         symbol=symbol,
-        timeframe="8h",
-        dataset="funding_rate",
+        timeframe=timeframe_label,
+        dataset=dataset,
         rows_before_repair=rows_before,
         rows_after_repair=len(working),
         start=str(working.index.min()) if not working.empty else None,
@@ -172,8 +185,29 @@ def repair_and_check_funding(
         report.issues.append("dataset is empty after repair")
         return working, report
 
-    report.gaps = _classify_gaps(working, pd.Timedelta(hours=8))
-    report.nan_price_rows = int(working["funding_rate"].isna().sum())
+    report.gaps = _classify_gaps(working, expected_freq)
+    nan_count = int(working[list(numeric_columns)].isna().any(axis=1).sum())
+    report.nan_price_rows = nan_count
+    negative_count = int((working[list(numeric_columns)] < 0).any(axis=1).sum())
+    report.negative_volume_rows = negative_count
+    if nan_count:
+        report.issues.append(f"{nan_count} rows with a NaN value in {numeric_columns}")
+    if negative_count:
+        report.issues.append(f"{negative_count} rows with a negative value in {numeric_columns}")
+    if any(g.classification == "extended" for g in report.gaps):
+        report.issues.append(f"one or more extended gaps present in {dataset} history")
+
+    return working, report
+
+
+def repair_and_check_funding(
+    symbol: str, df: pd.DataFrame
+) -> tuple[pd.DataFrame, DataQualityReport]:
+    working, report = _repair_and_check_series(
+        symbol, "funding_rate", "8h", df, pd.Timedelta(hours=8), ("funding_rate",)
+    )
+    if working.empty:
+        return working, report
     # Binance caps funding at +/-0.75% per interval for most USDⓈ-M perpetuals — a
     # value outside that is a consistency red flag, not a hard invariant, so it's
     # reported, not repaired.
@@ -184,10 +218,24 @@ def repair_and_check_funding(
             f"{report.funding_out_of_range_rows} funding rate rows outside the "
             "typical +/-0.75% band"
         )
-    if any(g.classification == "extended" for g in report.gaps):
-        report.issues.append("one or more extended gaps present in funding history")
-
     return working, report
+
+
+def repair_and_check_open_interest(
+    symbol: str, df: pd.DataFrame, expected_freq: pd.Timedelta = _DEFAULT_OPEN_INTEREST_FREQ
+) -> tuple[pd.DataFrame, DataQualityReport]:
+    """Gaps are expected and NOT flagged as an issue beyond Binance's own
+    ~30-day retention cap (`OPEN_INTEREST_MAX_LOOKBACK_DAYS`) — any request for
+    data older than that legitimately returns nothing, which is a documented
+    limitation, not a data quality defect."""
+    return _repair_and_check_series(
+        symbol,
+        "open_interest",
+        str(expected_freq),
+        df,
+        expected_freq,
+        ("sum_open_interest", "sum_open_interest_value"),
+    )
 
 
 def format_report(report: DataQualityReport) -> str:

@@ -271,6 +271,34 @@ connectivity, no dashboard.
 
 ---
 
+## Phase A18 — Complete Data Layer + Real-Data-Ready Pipeline (prep for the definitive study)
+
+> Requested: stop building features/strategies/optimizing parameters and instead
+> prepare the platform so that the moment real Binance data becomes available it can
+> run the definitive scientific validation with zero further code changes. Six parts:
+> complete the Binance data layer, maximum historical coverage with no hardcoded date
+> ranges, production-grade incremental sync, an automatic one-command scientific
+> validation pipeline, an expanded publication-quality report, and continued
+> institutional code-quality standards (tests, docs, types, lint, never fabricate/
+> optimize/leak). `fapi.binance.com` remains network-blocked in this sandbox
+> (confirmed directly, not assumed) — everything below is implemented against
+> Binance's published API docs and tested against a mocked client, ready for live
+> verification the moment access exists; see `docs/DATA_LAYER.md`.
+
+- [x] A18.1 Extended `market_data/historical/binance_client.py`: `ping()` (fast-fail connectivity check), `find_earliest_*` empirical-probe methods, mark price / premium index / open interest / exchange info endpoints — all endpoint coverage the strategy needs, each documented with its real history depth.
+- [x] A18.2 New dataset classes: `MarkPriceDataset`, `PremiumIndexDataset`, `OpenInterestDataset` (Binance's real ~30-day retention cap clamped and documented, not fabricated or silently ignored), and `exchange_info.get_symbol_info()` (typed `onboardDate` cross-check).
+- [x] A18.3 "Never hardcode a date range": `HistoricalDataset.find_earliest_available()` / `sync_full_history()` — a single `limit=1` probe from a safe pre-launch floor finds each symbol/dataset's true earliest available point; implemented for candles, funding, mark price, and premium index (Open Interest correctly uses a fixed retention floor instead — a probe would be dishonest given the real cap).
+- [x] A18.4 `scripts/sync_historical_data.py` — production incremental sync CLI: never redownloads existing data (`ensure_range()`'s existing gap-only logic), resumable, deduplicated on write (`ParquetStore.write()`), reports data-quality per dataset, cross-checks `exchangeInfo.onboardDate` against the empirical probe. Verified end-to-end against a fully-mocked `client._get()` (real pagination, not bypassed): a fresh sync followed by a resync makes strictly fewer requests and produces no duplicate timestamps.
+- [x] A18.5 `research/data_quality.py` gained `repair_and_check_open_interest()` (shared `_repair_and_check_series()` helper, factored out of the existing funding-rate check).
+- [x] A18.6 `research/data_loader.py` — single real/synthetic resolution point: `mode="auto"` (real-first, synthetic fallback, default), `mode="real"` (fail loudly, no silent fallback), `mode="synthetic"` (continued methodology testing). `scripts/run_research_pipeline.py --data-source {auto,real,synthetic}` passes this straight through — nothing in the pipeline script needs to change the day real access exists.
+- [x] A18.7 `research/conclusion.py` — the pre-registered (fixed-before-evaluation), four-check objective decision rule behind the mandated unsoftened binary conclusion sentence. Gated strictly on `all_data_is_real`: the real sentence is only ever emitted when every symbol's data came from `source="real"`; on synthetic data the report states "INSUFFICIENT EVIDENCE" and shows the mechanical verdict only as a clearly-labeled, non-binding proof that the rule executes correctly end-to-end.
+- [x] A18.8 Report expansion (`scripts/_research_report_body.py`): sample-size table with per-row data source, R-multiple distribution histogram, failure-mode breakdown (max consecutive losses, large-loss rate, exit reasons), per-symbol ground-truth-regime gating (omitted for real data, since there is no ground truth to compare against), §0/§9 provenance and conclusion language branching on `all_data_is_real`.
+- [x] A18.9 `docs/DATA_LAYER.md` — the map of endpoint coverage, the Open Interest retention limitation, the never-hardcode-a-date-range mechanism, incremental sync guarantees, and how the pipeline picks a data source.
+- [x] A18.10 Tests: `tests/unit/market_data/test_binance_client.py` (ping, pagination, earliest-detection — mocked only at `_get`, exercising real pagination logic), `test_new_datasets.py` (mark price/premium index/open interest/exchange info), `tests/integration/test_sync_historical_data.py` (full sync + resync against a low-level-mocked backend, verifying resumability and no duplicate timestamps), `tests/unit/research/test_conclusion.py` (all four checks, per-symbol failure, real-vs-synthetic gating), `tests/unit/research/test_data_loader.py` (auto/real/synthetic branching, no network touched in synthetic mode). Full suite green (362/362) with zero regressions; `ruff`/`black`/`mypy` clean on every file touched this phase (one pre-existing, out-of-scope `mypy` error in `scripts/download_historical_data.py`, unrelated to this phase, left as found).
+- [ ] A18.11 Re-run `python -m scripts.run_research_pipeline --data-source auto` end-to-end against the new code paths to confirm the rewritten pipeline (data-source-pluggable loading, expanded report body, decision rule) still produces a complete report — in progress as of this commit; will fall back to synthetic data with the real-fetch failure reason logged, exactly as designed for this still-network-blocked sandbox.
+
+---
+
 # PART B — Execution Platform (build second, after Part A is validated)
 
 Not started until Phase A15 passes. Scope unchanged from the previous plan, retained

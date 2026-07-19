@@ -154,6 +154,12 @@ class BacktestEngine:
             self.portfolio.apply_funding(symbol, mark_price, float(funding_rate_now))
             position = self.portfolio.get_position(symbol)
 
+        # Strategy-facing funding is the forward-filled "currently in effect" rate
+        # (`feed.funding_rate`), not `funding_events` above -- that sparse series
+        # only exists to tell the engine *when* to actually charge funding, and is
+        # NaN on all but the exact ~1-in-8-hours funding bars, which would make
+        # per-trade funding-rate instrumentation nearly always empty.
+        funding_rate_effective = self.feed.funding_rate.iloc[event.bar_index]
         equity = self.portfolio.equity({symbol.canonical: mark_price})
         context = build_context(
             self.feed.candles,
@@ -164,7 +170,9 @@ class BacktestEngine:
             event.bar_index,
             equity,
             position,
-            funding_rate=None if pd.isna(funding_rate_now) else float(funding_rate_now),
+            funding_rate=(
+                None if pd.isna(funding_rate_effective) else float(funding_rate_effective)
+            ),
         )
 
         # 3. Same-bar protective exits (stop/take-profit), or queue a new decision

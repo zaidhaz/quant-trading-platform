@@ -131,6 +131,81 @@ def monthly_returns(equity_curve: EquityCurve) -> pd.Series:
     return month_end.pct_change().dropna()
 
 
+def yearly_returns(equity_curve: EquityCurve) -> pd.Series:
+    series = _equity_series(equity_curve)
+    if series.empty:
+        return pd.Series(dtype=float)
+    year_end = series.resample("YE").last().ffill()
+    return year_end.pct_change().dropna()
+
+
+def ulcer_index(equity_curve: EquityCurve) -> float:
+    """RMS of drawdown depth over the whole curve -- unlike max_drawdown, this
+    penalizes *sustained* drawdowns, not just the single deepest one."""
+    series = _equity_series(equity_curve)
+    if series.empty:
+        return 0.0
+    running_max = series.cummax()
+    drawdown_pct = (series - running_max) / running_max.replace(0, np.nan) * 100
+    return float(np.sqrt((drawdown_pct.fillna(0) ** 2).mean()))
+
+
+def mar_ratio(equity_curve: EquityCurve) -> float:
+    """CAGR / max drawdown -- 0 max-drawdown (a flat or ever-rising curve) makes
+    this undefined; returned as 0.0 rather than raising, consistent with how the
+    rest of this module treats degenerate inputs."""
+    dd = max_drawdown(equity_curve)
+    if dd == 0:
+        return 0.0
+    return cagr(equity_curve) / dd
+
+
+def expectancy(trades: list[ClosedTrade]) -> float:
+    """Average realized R-multiple per trade -- the "edge per unit risked" figure,
+    distinct from `average_r_multiple` only in that it returns 0.0 (not silently
+    skips) when a trade has no computable R (no stop distance), since an
+    uncomputable R still needs to be visible to whoever reads expectancy, not
+    quietly dropped from the denominator."""
+    if not trades:
+        return 0.0
+    r_values = [t.r_multiple if t.r_multiple is not None else 0.0 for t in trades]
+    return float(np.mean(r_values))
+
+
+def rolling_sharpe(equity_curve: EquityCurve, timeframe: str, window_bars: int) -> pd.Series:
+    """Sharpe computed on a trailing `window_bars`-bar window of returns, one
+    value per bar (NaN during warmup) -- how the risk-adjusted edge evolves over
+    the backtest rather than a single point estimate."""
+    returns = _returns(equity_curve)
+    if returns.empty:
+        return pd.Series(dtype=float)
+    ppy = periods_per_year(timeframe)
+    rolling_mean = returns.rolling(window_bars).mean()
+    rolling_std = returns.rolling(window_bars).std()
+    return (rolling_mean / rolling_std.replace(0, np.nan)) * math.sqrt(ppy)
+
+
+def rolling_drawdown(equity_curve: EquityCurve) -> pd.Series:
+    """Drawdown (positive fraction) at every point in time, not just the max."""
+    series = _equity_series(equity_curve)
+    if series.empty:
+        return pd.Series(dtype=float)
+    running_max = series.cummax()
+    return ((running_max - series) / running_max.replace(0, np.nan)).fillna(0.0)
+
+
+def rolling_expectancy(trades: list[ClosedTrade], window_trades: int) -> pd.Series:
+    """Trailing `window_trades`-trade rolling mean R-multiple, indexed by each
+    trade's exit time -- whether the edge is stable, decaying, or improving
+    across the sample, trade-by-trade rather than bar-by-bar."""
+    if not trades:
+        return pd.Series(dtype=float)
+    r_values = [t.r_multiple if t.r_multiple is not None else 0.0 for t in trades]
+    index = pd.DatetimeIndex([t.exit_ts for t in trades])
+    series = pd.Series(r_values, index=index)
+    return series.rolling(window_trades).mean()
+
+
 def trade_distribution(trades: list[ClosedTrade]) -> dict[str, object]:
     if not trades:
         return {

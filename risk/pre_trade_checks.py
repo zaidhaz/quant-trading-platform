@@ -8,6 +8,13 @@ class RiskDecision:
     approved: bool
     reason: str | None
     quantity: float  # final quantity to trade (0.0 if rejected)
+    notional: float = 0.0
+    implied_leverage: float = 0.0
+    """notional / equity at decision time. `RiskLimits.max_leverage` defaults to
+    None (unlimited) — there's no universally-correct default to guess, since the
+    right cap is strategy- and account-specific. Surfacing the realized number here
+    (and on the journal) is how unbounded exposure stays visible/auditable instead
+    of silent when no cap is configured. See docs/VALIDATION_REPORT.md."""
 
 
 def evaluate(
@@ -40,4 +47,5 @@ def evaluate(
         if risk_amount > max_risk and risk_amount > 0:
             quantity = quantity * (max_risk / risk_amount)
 
-    return RiskDecision(True, None, quantity)
+    final_notional = quantity * entry_price
+    return RiskDecision(True, None, quantity, final_notional, final_notional / equity)

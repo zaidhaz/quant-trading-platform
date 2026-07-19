@@ -96,9 +96,18 @@ class HistoricalDataset(ABC):
         return window
 
     def ensure_range(
-        self, symbol: Symbol, start: datetime, end: datetime, timeframe: str | None = None
+        self,
+        symbol: Symbol,
+        start: datetime,
+        end: datetime,
+        timeframe: str | None = None,
+        allow_gaps: bool = False,
     ) -> pd.DataFrame:
-        """Download+store anything missing in [start, end], then return the full range."""
+        """Download+store anything missing in [start, end], then return the full
+        range. Strict by default: if the source genuinely has no data for part of
+        the range (a symbol not yet listed, an exchange outage, ...), this raises
+        DataGapError rather than silently handing back an incomplete range — a
+        caller who explicitly wants to tolerate that must pass `allow_gaps=True`."""
         start_ts, end_ts = to_utc_timestamp(start), to_utc_timestamp(end)
         existing = self.load(symbol, start_ts, end_ts, timeframe, allow_gaps=True)
         gaps = find_gaps(existing, start_ts, end_ts, self.expected_frequency(timeframe))
@@ -106,4 +115,4 @@ class HistoricalDataset(ABC):
             fresh = self.download(symbol, gap_start, gap_end, timeframe)
             if not fresh.empty:
                 self.store_data(symbol, fresh, timeframe)
-        return self.load(symbol, start_ts, end_ts, timeframe, allow_gaps=True)
+        return self.load(symbol, start_ts, end_ts, timeframe, allow_gaps=allow_gaps)

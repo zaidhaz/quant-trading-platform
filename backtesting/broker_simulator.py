@@ -20,8 +20,12 @@ class BrokerSimulator:
     def __init__(self, costs: BacktestCosts) -> None:
         self.costs = costs
 
-    def fill(self, side: OrderSide, quantity: float, reference_price: float) -> tuple[float, float]:
+    def fill(
+        self, side: OrderSide, quantity: float, reference_price: float, bar_volume: float = 0.0
+    ) -> tuple[float, float]:
         """Returns (fill_price, fee)."""
-        fill_price = self.costs.slippage.apply(reference_price, side)
+        fill_price = self.costs.slippage.apply(
+            reference_price, side, quantity=quantity, bar_volume=bar_volume
+        )
         fee = fee_cost(fill_price, quantity, self.costs.taker_fee_rate)
         return fill_price, fee

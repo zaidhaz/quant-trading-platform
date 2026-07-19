@@ -38,3 +38,4 @@ class ExitReason(StrEnum):
     STOP_LOSS = "stop_loss"
     TAKE_PROFIT = "take_profit"
     END_OF_BACKTEST = "end_of_backtest"
+    RUIN = "ruin"  # forced close: account equity hit zero or below

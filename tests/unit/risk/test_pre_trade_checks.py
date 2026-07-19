@@ -55,3 +55,32 @@ def test_no_stop_loss_skips_risk_per_trade_scaling() -> None:
     )
     assert decision.approved
     assert decision.quantity == 1.0
+
+
+def test_approved_decision_reports_notional_and_implied_leverage() -> None:
+    decision = evaluate(
+        quantity=10.0, entry_price=100.0, stop_loss=None, equity=2_000.0, limits=RiskLimits()
+    )
+    assert decision.notional == 1_000.0
+    assert decision.implied_leverage == 0.5
+
+
+def test_unbounded_leverage_is_visible_not_silently_capped() -> None:
+    # RiskLimits() with no max_leverage/max_position_notional set means no cap —
+    # documented, deliberate (see docs/VALIDATION_REPORT.md). This proves that
+    # absence of a cap doesn't also mean absence of *visibility*: a wildly
+    # over-levered trade is still approved, but reports a large implied_leverage
+    # rather than pretending everything's fine.
+    decision = evaluate(
+        quantity=1000.0, entry_price=100.0, stop_loss=None, equity=1_000.0, limits=RiskLimits()
+    )
+    assert decision.approved
+    assert decision.implied_leverage == 100.0  # 100,000 notional / 1,000 equity
+
+
+def test_rejected_decision_reports_zero_notional_and_leverage() -> None:
+    decision = evaluate(
+        quantity=0.0, entry_price=100.0, stop_loss=None, equity=1_000.0, limits=RiskLimits()
+    )
+    assert decision.notional == 0.0
+    assert decision.implied_leverage == 0.0

@@ -14,11 +14,23 @@ from core.enums import PositionSide
 
 @dataclass(frozen=True, slots=True)
 class Symbol:
-    """Canonical, exchange-agnostic symbol identity."""
+    """Canonical, exchange-agnostic symbol identity.
+
+    `base`/`quote` are normalized to uppercase on construction — including when
+    built directly (not via `.parse()`) — so `Symbol(base="btc", quote="usdt")` and
+    `Symbol(base="BTC", quote="USDT")` are the same identity. Without this, case
+    differences would silently fragment the Parquet store's file paths, the feature
+    cache's keys, and position-tracking dict keys, since all of those key off
+    `canonical`/`native()`.
+    """
 
     base: str
     quote: str
     exchange: str = "binance_futures"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "base", self.base.upper())
+        object.__setattr__(self, "quote", self.quote.upper())
 
     @property
     def canonical(self) -> str:

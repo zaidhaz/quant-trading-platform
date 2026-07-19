@@ -31,6 +31,10 @@ class JournalEntry:
     market_regime: dict[str, str]
     position_size: float
     risk_pct: float | None
+    implied_leverage: float | None = None
+    """(entry_price * position_size) / equity_at_signal — surfaced so an unbounded
+    RiskLimits() (no max_leverage set) doesn't mean exposure goes unnoticed; see
+    docs/VALIDATION_REPORT.md."""
     fees: float = 0.0
     funding: float = 0.0
     exit_ts: datetime | None = None
@@ -70,9 +74,12 @@ class JournalRecorder:
         signal = self._pending_signal.pop(key, None)
 
         risk_pct = None
-        if signal is not None and signal.stop_loss is not None and signal.equity_at_signal > 0:
-            risk_amount = abs(signal.entry_price - signal.stop_loss) * event.quantity
-            risk_pct = risk_amount / signal.equity_at_signal
+        implied_leverage = None
+        if signal is not None and signal.equity_at_signal > 0:
+            if signal.stop_loss is not None:
+                risk_amount = abs(signal.entry_price - signal.stop_loss) * event.quantity
+                risk_pct = risk_amount / signal.equity_at_signal
+            implied_leverage = (event.price * event.quantity) / signal.equity_at_signal
 
         entry = JournalEntry(
             symbol=str(event.symbol),
@@ -86,6 +93,7 @@ class JournalRecorder:
             market_regime=dict(signal.regime_snapshot) if signal else {},
             position_size=event.quantity,
             risk_pct=risk_pct,
+            implied_leverage=implied_leverage,
             fees=event.fee,
         )
         self._open_entry[key] = entry

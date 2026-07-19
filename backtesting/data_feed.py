@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 
 import pandas as pd
 
+from core.exceptions import DataGapError
 from core.types import Symbol
 from features.indicators import derivatives
 from market_data.historical.candles_dataset import CandlesDataset
 from market_data.historical.funding_rate_dataset import FundingRateDataset
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -56,8 +60,25 @@ class DataFeed:
         candles_dataset: CandlesDataset,
         funding_dataset: FundingRateDataset | None = None,
     ) -> DataFeed:
+        # Candle gaps are a hard failure: a backtest on fundamentally incomplete
+        # price data is not trustworthy, so this is *not* wrapped — let
+        # DataGapError propagate.
         candles = candles_dataset.ensure_range(symbol, start, end, timeframe)
+
         funding_df = None
         if funding_dataset is not None:
-            funding_df = funding_dataset.ensure_range(symbol, start, end)
+            try:
+                funding_df = funding_dataset.ensure_range(symbol, start, end)
+            except DataGapError as exc:
+                # Funding is enrichment, not core price data: missing funding
+                # history degrades cost accuracy for the affected periods (they'll
+                # be treated as zero funding) rather than blocking the backtest —
+                # but that degradation must be visible, not silent.
+                logger.warning(
+                    "Funding rate data incomplete for %s, proceeding with partial "
+                    "funding history (missing periods treated as zero funding cost): %s",
+                    symbol,
+                    exc,
+                )
+                funding_df = funding_dataset.ensure_range(symbol, start, end, allow_gaps=True)
         return cls.from_candles(symbol, timeframe, candles, funding_df)

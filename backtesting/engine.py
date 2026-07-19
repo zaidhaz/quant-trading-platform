@@ -4,6 +4,16 @@ Drives the exact same `strategies` + `risk` + `portfolio` code used live, with
 `BrokerSimulator` standing in for a live `execution` adapter behind conceptually the
 same fill-producing role. Realistic costs: trading fees, funding, and configurable
 slippage are all applied to every fill.
+
+Execution timing (see docs/VALIDATION_REPORT.md for the full audit finding this
+fixed): a strategy's entry/exit *decision* is made using a bar's close (fully known
+at that point), but the resulting order is not filled until the *next* bar's open —
+mirroring the real-world delay between "the candle just closed" and "the order is
+actually live in the market." Filling at the same close used to generate the signal
+is a well-known source of optimistic backtest bias. Stop-loss/take-profit exits are
+the one exception: they're checked against the *current* bar's high/low using a
+level that was fixed *before* the bar started, so no such delay applies — that is
+a real, immediately-actionable protective order, not a new decision.
 """
 
 from __future__ import annotations
@@ -16,12 +26,12 @@ import pandas as pd
 from backtesting.broker_simulator import BacktestCosts, BrokerSimulator
 from backtesting.data_feed import DataFeed
 from backtesting.event_simulator import EventSimulator
-from backtesting.slippage_models import FixedBpsSlippage
+from backtesting.slippage_models import FixedBpsSlippage, SlippageModel
 from core.enums import ExitReason, OrderSide, PositionSide, SignalDirection
 from core.event_bus import EventBus
 from core.events import CandleEvent, FillEvent, RiskRejectedEvent, SignalEvent
 from core.exceptions import InsufficientDataError
-from core.types import Position
+from core.types import Position, Symbol
 from features.feature_engine import FeatureEngine
 from market_regime import market_state
 from portfolio.portfolio_manager import PortfolioManager
@@ -43,7 +53,8 @@ _EXIT_ORDER_SIDE = {PositionSide.LONG: OrderSide.SELL, PositionSide.SHORT: Order
 class BacktestConfig:
     initial_capital: float = 100_000.0
     taker_fee_rate: float = 0.0004
-    slippage_bps: float = 2.0
+    slippage_bps: float = 2.0  # ignored if `slippage_model` is set
+    slippage_model: SlippageModel | None = None  # overrides slippage_bps's FixedBpsSlippage
     risk_limits: RiskLimits = field(default_factory=RiskLimits)
     use_confidence_scaling: bool = False
     warmup_bars: int = 0
@@ -59,6 +70,21 @@ class BacktestResult:
     signals: list[SignalEvent]
     initial_capital: float
     final_equity: float
+    ruined: bool = False
+
+
+@dataclass(slots=True)
+class _PendingOrder:
+    """A decision made on bar i's close, to be executed at bar i+1's open."""
+
+    kind: str  # "open" | "close"
+    order_side: OrderSide
+    quantity: float
+    correlation_id: str
+    position_side: PositionSide | None = None  # open only
+    stop_loss: float | None = None  # open only
+    take_profit: float | None = None  # open only
+    exit_reason: ExitReason | None = None  # close only
 
 
 class BacktestEngine:
@@ -80,19 +106,22 @@ class BacktestEngine:
 
         self.portfolio = PortfolioManager(self.config.initial_capital)
         self.risk_engine = RiskEngine(self.config.risk_limits, self.config.use_confidence_scaling)
-        self.broker = BrokerSimulator(
-            BacktestCosts(self.config.taker_fee_rate, FixedBpsSlippage(self.config.slippage_bps))
-        )
+        slippage = self.config.slippage_model or FixedBpsSlippage(self.config.slippage_bps)
+        self.broker = BrokerSimulator(BacktestCosts(self.config.taker_fee_rate, slippage))
         self.regime_df = market_state.compute(
             feed.candles, self.features, feed.symbol, feed.timeframe
         )
         self.signals: list[SignalEvent] = []
+        self._pending_order: _PendingOrder | None = None
+        self.ruined = False
 
         self.bus.subscribe(CandleEvent, self._on_candle)
 
     def run(self) -> BacktestResult:
         EventSimulator(self.bus).run(self.feed)
-        self._force_close_at_end()
+        self._pending_order = None  # a decision on the last bar has no "next bar" to fill at
+        if not self.ruined:
+            self._force_close_at_end()
         equity_curve = self.portfolio.equity_curve
         return BacktestResult(
             strategy_id=self.strategy_id,
@@ -103,20 +132,27 @@ class BacktestEngine:
             signals=self.signals,
             initial_capital=self.config.initial_capital,
             final_equity=equity_curve[-1][1] if equity_curve else self.config.initial_capital,
+            ruined=self.ruined,
         )
 
     def _on_candle(self, event: CandleEvent) -> None:
-        if event.bar_index < self.config.warmup_bars:
+        if self.ruined or event.bar_index < self.config.warmup_bars:
             return
 
         symbol = self.feed.symbol
+
+        # 1. Execute whatever was decided on the previous bar, at THIS bar's open.
+        if self._pending_order is not None:
+            self._execute_pending_order(event)
+
         mark_price = event.close
         position = self.portfolio.get_position(symbol)
 
+        # 2. Funding accrual on a position that's open going into this bar.
         funding_rate_now = self.feed.funding_events.iloc[event.bar_index]
         if position is not None and not pd.isna(funding_rate_now):
             self.portfolio.apply_funding(symbol, mark_price, float(funding_rate_now))
-            position = self.portfolio.get_position(symbol)  # refresh after funding accrual
+            position = self.portfolio.get_position(symbol)
 
         equity = self.portfolio.equity({symbol.canonical: mark_price})
         context = build_context(
@@ -130,14 +166,23 @@ class BacktestEngine:
             position,
         )
 
-        if position is None:
-            self._try_entry(context, event)
+        # 3. Same-bar protective exits (stop/take-profit), or queue a new decision
+        #    (entry / strategy-driven exit) for execution next bar.
+        if position is not None:
+            self._evaluate_exit(context, position, event)
         else:
-            self._check_exit(context, position, event)
+            self._evaluate_entry(context, event)
 
-        self.portfolio.record_equity(event.ts, {symbol.canonical: mark_price})
+        # 4. Record equity; a non-positive balance halts the simulation (see
+        #    docs/VALIDATION_REPORT.md — no liquidation/margin-call mechanic exists,
+        #    so we stop rather than let equity go arbitrarily negative).
+        recorded_equity = self.portfolio.record_equity(event.ts, {symbol.canonical: mark_price})
+        if recorded_equity <= 0:
+            self._handle_ruin(event)
 
-    def _try_entry(self, context, event: CandleEvent) -> None:
+    # ---- entries -----------------------------------------------------------
+
+    def _evaluate_entry(self, context, event: CandleEvent) -> None:
         try:
             setup = self.strategy.detect_setup(context)
         except InsufficientDataError:
@@ -169,6 +214,25 @@ class BacktestEngine:
         self.signals.append(signal_event)
         self.bus.publish(signal_event)
 
+        if not self._stop_take_profit_are_sane(
+            setup.direction, setup.reference_price, stop_loss, take_profit
+        ):
+            self.bus.publish(
+                RiskRejectedEvent(
+                    ts=event.ts,
+                    symbol=event.symbol,
+                    strategy_id=self.strategy_id,
+                    signal_id=signal_event.event_id,
+                    reason=(
+                        f"stop_loss={stop_loss} / take_profit={take_profit} invalid for a "
+                        f"{setup.direction.value} entry at {setup.reference_price} — "
+                        "rejected rather than opening a nonsensical position"
+                    ),
+                    correlation_id=signal_event.correlation_id,
+                )
+            )
+            return
+
         decision = self.risk_engine.evaluate(
             suggested_size, setup.reference_price, stop_loss, confidence, context.equity
         )
@@ -185,56 +249,82 @@ class BacktestEngine:
             )
             return
 
-        side = _ENTRY_ORDER_SIDE[setup.direction]
-        fill_price, fee = self.broker.fill(side, decision.quantity, setup.reference_price)
-        self.portfolio.open_position(
-            event.symbol,
-            _DIRECTION_TO_SIDE[setup.direction],
-            fill_price,
-            decision.quantity,
-            event.ts,
-            stop_loss,
-            take_profit,
-            entry_fee=fee,
-        )
-        self.bus.publish(
-            FillEvent(
-                ts=event.ts,
-                symbol=event.symbol,
-                strategy_id=self.strategy_id,
-                order_id=signal_event.event_id,
-                side=side,
-                quantity=decision.quantity,
-                price=fill_price,
-                fee=fee,
-                is_position_open=True,
-                correlation_id=signal_event.correlation_id,
-            )
+        self._pending_order = _PendingOrder(
+            kind="open",
+            order_side=_ENTRY_ORDER_SIDE[setup.direction],
+            quantity=decision.quantity,
+            correlation_id=signal_event.event_id,
+            position_side=_DIRECTION_TO_SIDE[setup.direction],
+            stop_loss=stop_loss,
+            take_profit=take_profit,
         )
 
-    def _check_exit(self, context, position: Position, event: CandleEvent) -> None:
-        # Conservative, documented ordering: a strategy-driven exit (evaluated at
-        # bar close) is checked first, then stop-loss, then take-profit — a bar that
-        # breaches both stop and target is assumed to have hit the stop first.
-        exit_reason: ExitReason | None = None
-        if self.strategy.check_exit(context, position):
-            exit_reason = ExitReason.STRATEGY_EXIT
-        elif position.stop_loss is not None and self._stop_hit(position, event):
-            exit_reason = ExitReason.STOP_LOSS
-        elif position.take_profit is not None and self._take_profit_hit(position, event):
-            exit_reason = ExitReason.TAKE_PROFIT
+    @staticmethod
+    def _stop_take_profit_are_sane(
+        direction: SignalDirection,
+        entry_price: float,
+        stop_loss: float | None,
+        take_profit: float | None,
+    ) -> bool:
+        """A stop/target on the wrong side of entry is a strategy bug (e.g. a sign
+        error in an ATR offset) that would otherwise silently produce a position
+        that "stops out" the instant it opens, or a target that can never pay out.
+        Reject rather than execute it."""
+        if direction == SignalDirection.LONG:
+            if stop_loss is not None and stop_loss >= entry_price:
+                return False
+            if take_profit is not None and take_profit <= entry_price:
+                return False
+        else:
+            if stop_loss is not None and stop_loss <= entry_price:
+                return False
+            if take_profit is not None and take_profit >= entry_price:
+                return False
+        return True
 
-        if exit_reason is None:
+    # ---- exits ---------------------------------------------------------------
+
+    def _evaluate_exit(self, context, position: Position, event: CandleEvent) -> None:
+        # Stop-loss and take-profit both use levels fixed before this bar started,
+        # so they're checked (and filled) intrabar, same-bar. Stop is checked first:
+        # a bar that breaches both is conservatively assumed to have hit the stop
+        # first. A strategy-driven exit is a *new* decision made from this bar's
+        # close, so — consistent with entries — it's deferred to next bar's open.
+        stop_fill = self._resolve_stop_loss(position, event)
+        if stop_fill is not None:
+            self._close_same_bar(position, stop_fill, event, ExitReason.STOP_LOSS)
             return
+        take_profit_fill = self._resolve_take_profit(position, event)
+        if take_profit_fill is not None:
+            self._close_same_bar(position, take_profit_fill, event, ExitReason.TAKE_PROFIT)
+            return
+        if self.strategy.check_exit(context, position):
+            self._pending_order = _PendingOrder(
+                kind="close",
+                order_side=_EXIT_ORDER_SIDE[position.side],
+                quantity=position.quantity,
+                correlation_id=f"exit-{event.symbol.native()}-{event.ts.isoformat()}",
+                exit_reason=ExitReason.STRATEGY_EXIT,
+            )
 
-        exit_price = self._exit_price(position, event, exit_reason)
-        self._close(position, exit_price, event.ts, exit_reason, event.symbol)
+    def _close_same_bar(
+        self, position: Position, exit_price: float, event: CandleEvent, reason: ExitReason
+    ) -> None:
+        self._close(position, exit_price, event.ts, reason, event.symbol, bar_volume=event.volume)
 
     def _close(
-        self, position: Position, exit_price: float, ts: datetime, reason: ExitReason, symbol
+        self,
+        position: Position,
+        exit_price: float,
+        ts: datetime,
+        reason: ExitReason,
+        symbol: Symbol,
+        bar_volume: float = 0.0,
     ) -> None:
         side = _EXIT_ORDER_SIDE[position.side]
-        fill_price, fee = self.broker.fill(side, position.quantity, exit_price)
+        fill_price, fee = self.broker.fill(
+            side, position.quantity, exit_price, bar_volume=bar_volume
+        )
         trade = self.portfolio.close_position(symbol, fill_price, ts, fee, reason)
         self.bus.publish(
             FillEvent(
@@ -251,6 +341,113 @@ class BacktestEngine:
                 exit_reason=reason,
             )
         )
+
+    def _execute_pending_order(self, event: CandleEvent) -> None:
+        order = self._pending_order
+        self._pending_order = None
+        if order is None:
+            return
+        symbol = event.symbol
+
+        if order.kind == "open":
+            assert order.position_side is not None  # always set by _evaluate_entry for "open"
+            fill_price, fee = self.broker.fill(
+                order.order_side, order.quantity, event.open, bar_volume=event.volume
+            )
+            self.portfolio.open_position(
+                symbol,
+                order.position_side,
+                fill_price,
+                order.quantity,
+                event.ts,
+                order.stop_loss,
+                order.take_profit,
+                entry_fee=fee,
+            )
+            self.bus.publish(
+                FillEvent(
+                    ts=event.ts,
+                    symbol=symbol,
+                    strategy_id=self.strategy_id,
+                    order_id=order.correlation_id,
+                    side=order.order_side,
+                    quantity=order.quantity,
+                    price=fill_price,
+                    fee=fee,
+                    is_position_open=True,
+                    correlation_id=order.correlation_id,
+                )
+            )
+        else:
+            position = self.portfolio.get_position(symbol)
+            if position is None:
+                return  # defensive: shouldn't happen, but never fill a close with nothing open
+            fill_price, fee = self.broker.fill(
+                order.order_side, order.quantity, event.open, bar_volume=event.volume
+            )
+            trade = self.portfolio.close_position(
+                symbol, fill_price, event.ts, fee, order.exit_reason or ExitReason.STRATEGY_EXIT
+            )
+            self.bus.publish(
+                FillEvent(
+                    ts=event.ts,
+                    symbol=symbol,
+                    strategy_id=self.strategy_id,
+                    order_id=order.correlation_id,
+                    side=order.order_side,
+                    quantity=order.quantity,
+                    price=fill_price,
+                    fee=fee,
+                    funding_cost=trade.funding,
+                    is_position_close=True,
+                    exit_reason=order.exit_reason,
+                    correlation_id=order.correlation_id,
+                )
+            )
+
+    # ---- stop/take-profit resolution (with gap-through handling) -------------
+
+    @staticmethod
+    def _resolve_stop_loss(position: Position, event: CandleEvent) -> float | None:
+        """None if not triggered this bar. Otherwise the fill price — a stop can't
+        fill better than the bar's open if the market already gapped past it before
+        the bar started trading (a stop order never guarantees its exact price)."""
+        stop = position.stop_loss
+        if stop is None:
+            return None
+        if position.side == PositionSide.LONG:
+            if event.open <= stop:
+                return event.open
+            if event.low <= stop:
+                return stop
+        else:
+            if event.open >= stop:
+                return event.open
+            if event.high >= stop:
+                return stop
+        return None
+
+    @staticmethod
+    def _resolve_take_profit(position: Position, event: CandleEvent) -> float | None:
+        """None if not triggered this bar. Modeled as a limit order: a favorable gap
+        fills at the (better) open rather than being capped at the target level,
+        since a limit order guarantees at least its price, often better on a gap."""
+        target = position.take_profit
+        if target is None:
+            return None
+        if position.side == PositionSide.LONG:
+            if event.open >= target:
+                return event.open
+            if event.high >= target:
+                return target
+        else:
+            if event.open <= target:
+                return event.open
+            if event.low <= target:
+                return target
+        return None
+
+    # ---- misc ------------------------------------------------------------------
 
     @staticmethod
     def _snapshot_common_features(context) -> dict[str, float]:
@@ -271,30 +468,13 @@ class BacktestEngine:
                 continue
         return snapshot
 
-    @staticmethod
-    def _stop_hit(position: Position, event: CandleEvent) -> bool:
-        # Only called after the caller has already checked position.stop_loss is not None.
-        assert position.stop_loss is not None
-        if position.side == PositionSide.LONG:
-            return event.low <= position.stop_loss
-        return event.high >= position.stop_loss
-
-    @staticmethod
-    def _take_profit_hit(position: Position, event: CandleEvent) -> bool:
-        assert position.take_profit is not None
-        if position.side == PositionSide.LONG:
-            return event.high >= position.take_profit
-        return event.low <= position.take_profit
-
-    @staticmethod
-    def _exit_price(position: Position, event: CandleEvent, reason: ExitReason) -> float:
-        if reason == ExitReason.STOP_LOSS:
-            assert position.stop_loss is not None
-            return position.stop_loss
-        if reason == ExitReason.TAKE_PROFIT:
-            assert position.take_profit is not None
-            return position.take_profit
-        return event.close
+    def _handle_ruin(self, event: CandleEvent) -> None:
+        self.ruined = True
+        self._pending_order = None
+        symbol = self.feed.symbol
+        position = self.portfolio.get_position(symbol)
+        if position is not None:
+            self._close_same_bar(position, event.close, event, ExitReason.RUIN)
 
     def _force_close_at_end(self) -> None:
         symbol = self.feed.symbol
@@ -308,4 +488,5 @@ class BacktestEngine:
             self.feed.candles.index[-1].to_pydatetime(),
             ExitReason.END_OF_BACKTEST,
             symbol,
+            bar_volume=float(last_row["volume"]),
         )

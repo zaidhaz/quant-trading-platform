@@ -1,3 +1,5 @@
+import pytest
+
 from backtesting.data_feed import DataFeed
 from backtesting.engine import BacktestConfig, BacktestEngine
 from core.enums import ExitReason, PositionSide, SignalDirection
@@ -65,6 +67,20 @@ def test_journal_risk_pct_computed_from_stop_distance_and_equity(deterministic_l
     # risk = |100-95| * filled_quantity ; equity ~= initial_capital at signal time
     assert entry.risk_pct is not None
     assert entry.risk_pct > 0
+
+
+def test_journal_implied_leverage_computed_even_without_a_stop(deterministic_long_df) -> None:
+    # implied_leverage is visibility into notional exposure, independent of
+    # whether a stop-loss exists — RiskLimits() has no default leverage cap, so
+    # this is the one place that exposure is guaranteed to show up.
+    strategy = OneShotStrategy(stop_loss=None, take_profit=None, size=50.0)
+    result, journal = run_with_journal(deterministic_long_df, strategy)
+
+    entry = journal.entries[0]
+    assert entry.risk_pct is None  # no stop -> no risk_pct
+    assert entry.implied_leverage is not None
+    expected = (entry.entry_price * entry.position_size) / 10_000.0
+    assert entry.implied_leverage == pytest.approx(expected)
 
 
 def test_short_position_journaled_correctly(deterministic_short_df) -> None:

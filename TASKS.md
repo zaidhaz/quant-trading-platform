@@ -13,6 +13,13 @@ validated in Part A. See `docs/ARCHITECTURE.md` Revision 2 for why.
 
 Checkbox legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 
+**Pre-Part-B audit completed:** a full correctness/realism audit of everything
+through Phase A14 found and fixed 8 real issues (4 critical — including a same-bar
+signal/execution look-ahead-adjacent bug in the backtest engine — 1 high, 2 medium,
+1 transparency gap), each with regression tests (test suite: 158 → 196 tests). See
+[`docs/VALIDATION_REPORT.md`](docs/VALIDATION_REPORT.md) for the full findings,
+fixes, what was verified, and what assumptions/limitations remain.
+
 ---
 
 # PART A — Research & Backtesting Engine (build first)

@@ -33,6 +33,20 @@ class FakeDataset(HistoricalDataset):
         return HOUR
 
 
+class SourceHasNoDataDataset(HistoricalDataset):
+    """A dataset whose upstream source genuinely has nothing for the requested
+    range (e.g. a symbol not yet listed, or a permanent gap) — download() always
+    returns empty, simulating an unfillable gap."""
+
+    name = "empty"
+
+    def download(self, symbol, start, end, timeframe=None) -> pd.DataFrame:
+        return pd.DataFrame(columns=["close"])
+
+    def expected_frequency(self, timeframe: str | None) -> pd.Timedelta:
+        return HOUR
+
+
 class TestFindGaps:
     def test_empty_dataframe_is_one_big_gap(self) -> None:
         start, end = pd.Timestamp("2024-01-01", tz="UTC"), pd.Timestamp("2024-01-02", tz="UTC")
@@ -116,3 +130,23 @@ class TestHistoricalDatasetLoad:
         dataset.ensure_range(SYMBOL, datetime(2024, 1, 1, 0), datetime(2024, 1, 1, 4), "1h")
 
         assert dataset.download_calls == []
+
+    def test_ensure_range_raises_when_source_has_no_data_for_the_gap(self, tmp_path) -> None:
+        # This is the strict-by-default contract: ensure_range() must not silently
+        # return a partial range just because the upstream source has nothing for
+        # part of it — the caller needs to know the range is incomplete.
+        dataset = SourceHasNoDataDataset(ParquetStore(tmp_path))
+
+        with pytest.raises(DataGapError):
+            dataset.ensure_range(SYMBOL, datetime(2024, 1, 1, 0), datetime(2024, 1, 1, 5), "1h")
+
+    def test_ensure_range_allow_gaps_returns_partial_data_instead_of_raising(
+        self, tmp_path
+    ) -> None:
+        dataset = SourceHasNoDataDataset(ParquetStore(tmp_path))
+
+        result = dataset.ensure_range(
+            SYMBOL, datetime(2024, 1, 1, 0), datetime(2024, 1, 1, 5), "1h", allow_gaps=True
+        )
+
+        assert result.empty

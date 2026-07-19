@@ -7,8 +7,12 @@ platform** — see `docs/ARCHITECTURE.md` Revision 2 for why.
 **Status: Part A (Research & Backtesting Engine) implemented.** Part B (live/paper
 execution, API, dashboard) has not been started — see `TASKS.md` for the phase gate.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design and
-[`TASKS.md`](TASKS.md) for the milestone-by-milestone plan and current status.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design,
+[`TASKS.md`](TASKS.md) for the milestone-by-milestone plan and current status, and
+[`docs/VALIDATION_REPORT.md`](docs/VALIDATION_REPORT.md) for the pre-Part-B
+correctness audit (backtesting logic, data handling, execution simulation, risk
+calculations, statistical methodology — what was found, fixed, verified, and what
+still remains an open assumption or limitation).
 
 ## Quickstart (research engine)
 
@@ -28,7 +32,7 @@ python scripts/run_backtest.py --strategy ma_crossover --symbol BTC/USDT \
     --params '{"fast_period": 10, "slow_period": 30}' \
     --journal-csv journal.csv
 
-make test   # 158 unit tests
+make test   # 196 unit tests
 make lint   # ruff + black --check
 make typecheck  # mypy
 ```

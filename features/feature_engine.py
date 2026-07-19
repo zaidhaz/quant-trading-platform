@@ -56,7 +56,26 @@ INDICATOR_REGISTRY: dict[str, IndicatorFn] = {
     "volume_profile_poc": lambda df, period=50, bins=10: volume.volume_profile_poc(
         df, period, bins
     ),
+    "volume_profile_vah": lambda df, period=50, bins=10, value_area_pct=0.70: (
+        volume.volume_profile_value_area(df, period, bins, value_area_pct)["vah"]
+    ),
+    "volume_profile_val": lambda df, period=50, bins=10, value_area_pct=0.70: (
+        volume.volume_profile_value_area(df, period, bins, value_area_pct)["val"]
+    ),
+    "volume_percentile": lambda df, lookback=100: volume.volume_percentile(df, lookback),
 }
+
+
+def register_indicator(name: str, fn: IndicatorFn) -> None:
+    """Extension point for domain-specific indicators that don't belong in the
+    generic `features/indicators/` library (e.g. a strategy package's own
+    structural/microstructure primitives) but still want the same causal,
+    cached, warmup-safe treatment `FeatureEngine.get()` gives every built-in
+    indicator. Mirrors `strategies/registry.py::register_strategy` -- called
+    once as an import side effect by the module that owns `fn`."""
+    if name in INDICATOR_REGISTRY and INDICATOR_REGISTRY[name] is not fn:
+        raise ValueError(f"Indicator already registered: {name!r}")
+    INDICATOR_REGISTRY[name] = fn
 
 
 class FeatureEngine:

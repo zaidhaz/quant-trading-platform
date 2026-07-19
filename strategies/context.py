@@ -48,6 +48,10 @@ class StrategyContext:
     regime: RegimeAccessor
     equity: float
     position: Position | None = None
+    funding_rate: float | None = None
+    """This bar's funding rate, when the feed loaded one (see `DataFeed.funding_events`)
+    -- current-bar only, no `offset` lookback like `features.get()` has, since it's a
+    single passthrough value rather than a cached derived series."""
 
     @property
     def price(self) -> float:
@@ -63,6 +67,7 @@ def build_context(
     index: int,
     equity: float,
     position: Position | None = None,
+    funding_rate: float | None = None,
 ) -> StrategyContext:
     row = df.iloc[index]
     return StrategyContext(
@@ -73,4 +78,5 @@ def build_context(
         regime=RegimeAccessor(regime_df, index),
         equity=equity,
         position=position,
+        funding_rate=funding_rate,
     )

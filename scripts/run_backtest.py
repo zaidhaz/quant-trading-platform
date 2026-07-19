@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 # Import registers @register_strategy-decorated classes as a side effect.
+import strategies.examples.liquidity_exhaustion_reversal  # noqa: F401,E402
 import strategies.examples.ma_crossover  # noqa: F401,E402
 import strategies.examples.mean_reversion  # noqa: F401,E402
 from analytics import performance_metrics as pm

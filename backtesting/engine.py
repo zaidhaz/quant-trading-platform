@@ -164,6 +164,7 @@ class BacktestEngine:
             event.bar_index,
             equity,
             position,
+            funding_rate=None if pd.isna(funding_rate_now) else float(funding_rate_now),
         )
 
         # 3. Same-bar protective exits (stop/take-profit), or queue a new decision
@@ -209,7 +210,12 @@ class BacktestEngine:
             take_profit=take_profit,
             suggested_size=suggested_size,
             regime_snapshot=context.regime.current().as_dict(),
-            features_snapshot=self._snapshot_common_features(context),
+            # `setup.metadata` lets a strategy contribute its own instrumentation
+            # (e.g. Liquidity Exhaustion Reversal's sweep/displacement/absorption
+            # features, see docs/strategies/LIQUIDITY_EXHAUSTION_REVERSAL.md §6) on
+            # top of the small fixed set every strategy gets for free. Strategy
+            # keys win on collision (more specific than the generic snapshot).
+            features_snapshot={**self._snapshot_common_features(context), **setup.metadata},
         )
         self.signals.append(signal_event)
         self.bus.publish(signal_event)

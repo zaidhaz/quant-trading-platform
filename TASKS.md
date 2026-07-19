@@ -228,6 +228,22 @@ connectivity, no dashboard.
 - [x] A15.4 Full regression pass: unit + integration + backtest golden-dataset tests green (158/158 passing; DB-dependent tests from Phase A4 not yet written — see note there).
 - [ ] A15.5 Decision point — only after this phase passes does work begin on Part B (Execution Platform). Document the decision in `docs/adr/`.
 
+## Phase A16 — First Production Strategy: Liquidity Exhaustion Reversal System
+
+> Still Part A (research), not Part B — a strategy is research output, not execution
+> infrastructure. See `docs/strategies/LIQUIDITY_EXHAUSTION_REVERSAL.md` for the full
+> research review (critiquing every "Smart Money Concepts" rule against market
+> microstructure before accepting it), mathematical definitions, architecture,
+> parameter table, and assumptions/limitations/future-experiments sections.
+
+- [x] A16.1 Phase 1/2 research review + mathematical definitions doc, written *before* any code, per explicit instruction. Notably: collapses the ambiguous "CHoCH/BOS/structure shift" trio into one precise swing-based state machine; redefines "equal highs/lows" as ATR-normalized, minimum-touch liquidity-pool clusters instead of raw price equality; ties the stop-loss directly to the hypothesis's own falsification boundary (the swept extreme) rather than a generic ATR multiple; and explicitly scopes out Open Interest/Liquidations/real order-flow delta as unavailable (no dataset exists) rather than fabricating them.
+- [x] A16.2 `strategies/liquidity_exhaustion_reversal/{structure,microstructure,config}.py` — pure, independently unit-tested primitives (swing points, liquidity pools, sweep-and-reclaim, BoS/ChoCH, displacement, absorption proxy, delta proxy + divergence, Fair Value Gap, Order Block) and a fully configurable parameter dataclass.
+- [x] A16.3 `strategies/liquidity_exhaustion_reversal/indicators.py` registers all of the above into `FeatureEngine` via a new `register_indicator()` extension point (`features/feature_engine.py`) — same causal/cached/warmup-safe semantics as every built-in indicator, no parallel data-access path.
+- [x] A16.4 `strategies/examples/liquidity_exhaustion_reversal.py` implements the full `Strategy` ABC; baseline setup (pool + sweep-and-reclaim + displacement) works with every optional filter (absorption, delta divergence, Fair Value Gap, Order Block, Open Interest flush) disabled, each independently toggleable via config for A/B testing.
+- [x] A16.5 Trade explainability (Phase 5) + research instrumentation (Phase 6): every signal's `reasoning` carries the full explainability text, and `Setup.metadata` carries ~40 features covering the requested instrumentation list. Required two small, generally-applicable (not LES-specific) engine fixes: `StrategyContext.funding_rate` (funding was loaded but never exposed to strategies) and merging `Setup.metadata` into `SignalEvent.features_snapshot` (the field existed but nothing downstream ever read it, for any strategy). Also added `volume_profile_value_area()` (VAH/VAL) and `volume_percentile()` to the shared `features/indicators/volume.py`.
+- [x] A16.6 Tests: primitive unit tests, strategy-hook unit tests (including an A/B containment test proving optional filters can only narrow, never expand, the baseline), and integration tests (full backtest sanity, Phase 6 instrumentation coverage on real emitted signals, a complete example-trade walkthrough, and edge cases — no-pool-ever-forms, sweep-with-no-reclaim, backtest shorter than warmup). Full pre-existing 241-test suite still green, confirming this is a pure addition.
+- [x] A16.7 Research report finalized in `docs/strategies/LIQUIDITY_EXHAUSTION_REVERSAL.md` (architecture overview, flow, full parameter table, assumptions/biases, suggested future experiments, parameters intentionally left unoptimized).
+
 ---
 
 # PART B — Execution Platform (build second, after Part A is validated)

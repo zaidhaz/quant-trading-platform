@@ -12,10 +12,15 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design,
 [`docs/VALIDATION_REPORT.md`](docs/VALIDATION_REPORT.md) for the pre-Part-B
 correctness audit (backtesting logic, data handling, execution simulation, risk
 calculations, statistical methodology — what was found, fixed, verified, and what
-still remains an open assumption or limitation), and
+still remains an open assumption or limitation),
 [`docs/BACKTRADER_COMPARISON.md`](docs/BACKTRADER_COMPARISON.md) for an external
 cross-validation of the backtest engine against Backtrader, an established
-backtesting library.
+backtesting library, and
+[`docs/strategies/LIQUIDITY_EXHAUSTION_REVERSAL.md`](docs/strategies/LIQUIDITY_EXHAUSTION_REVERSAL.md)
+for the platform's first production strategy — a research review, mathematical
+specification, and research report for a falsifiable liquidity-sweep-and-reclaim
+reversal hypothesis, deliberately written to translate ambiguous "Smart Money
+Concepts" jargon into precise, testable, market-microstructure-grounded rules.
 
 ## Quickstart (research engine)
 
@@ -35,7 +40,12 @@ python scripts/run_backtest.py --strategy ma_crossover --symbol BTC/USDT \
     --params '{"fast_period": 10, "slow_period": 30}' \
     --journal-csv journal.csv
 
-make test   # 241 tests
+# Or the first production strategy (see docs/strategies/LIQUIDITY_EXHAUSTION_REVERSAL.md)
+python scripts/run_backtest.py --strategy liquidity_exhaustion_reversal \
+    --symbol BTC/USDT --timeframe 1h --start 2023-01-01 --end 2024-01-01 \
+    --journal-csv journal.csv
+
+make test   # 284 tests
 make lint   # ruff + black --check
 make typecheck  # mypy
 
@@ -44,10 +54,13 @@ pip install -e ".[validation]"
 pytest tests/integration/test_backtrader_comparison.py -v
 ```
 
-Two example strategies ship out of the box: `ma_crossover` and `mean_reversion`
-(see `strategies/examples/`). Both implement the full `Strategy` interface
-(`detect_setup` / `check_entry` / `check_exit` / `stop_loss` / `take_profit` /
-`position_size`) and are fully interchangeable in the backtesting engine.
+Three strategies ship out of the box: `ma_crossover` and `mean_reversion`
+(simple examples, see `strategies/examples/`), and `liquidity_exhaustion_reversal`
+(the first production strategy — a falsifiable liquidity-sweep-and-reclaim
+reversal hypothesis, see `docs/strategies/LIQUIDITY_EXHAUSTION_REVERSAL.md`). All
+three implement the full `Strategy` interface (`detect_setup` / `check_entry` /
+`check_exit` / `stop_loss` / `take_profit` / `position_size`) and are fully
+interchangeable in the backtesting engine.
 
 **Not yet run against real Binance data** — this development environment has no
 outbound network access to Binance's API. The pipeline has been validated

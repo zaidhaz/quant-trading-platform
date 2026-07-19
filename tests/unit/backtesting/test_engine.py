@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from backtesting.data_feed import DataFeed
 from backtesting.engine import BacktestConfig, BacktestEngine
@@ -66,6 +67,27 @@ def test_force_closes_open_position_at_end_of_backtest(deterministic_long_df) ->
     assert len(result.closed_trades) == 1
     assert result.closed_trades[0].exit_reason == ExitReason.END_OF_BACKTEST
     assert engine.portfolio.tracker.all_open() == []
+
+
+def test_final_equity_consistent_with_closed_trades_after_forced_close(
+    deterministic_long_df,
+) -> None:
+    # Regression for a bug an external comparison against Backtrader surfaced
+    # (docs/BACKTRADER_COMPARISON.md §3.3): equity_curve's last point must reflect
+    # the *realized* post-force-close value, not the unrealized mark-to-market
+    # value from just before it — otherwise final_equity silently disagrees with
+    # summing closed_trades.
+    config = BacktestConfig(initial_capital=10_000.0, taker_fee_rate=0.001, slippage_bps=5.0)
+    strategy = OneShotStrategy(stop_loss=1.0, take_profit=1000.0)  # never hit -> forced close
+    engine = BacktestEngine(strategy, make_feed(deterministic_long_df), config)
+
+    result = engine.run()
+
+    assert len(result.closed_trades) == 1
+    assert result.closed_trades[0].exit_reason == ExitReason.END_OF_BACKTEST
+    expected_final_equity = config.initial_capital + sum(t.net_pnl for t in result.closed_trades)
+    assert result.final_equity == pytest.approx(expected_final_equity)
+    assert result.equity_curve[-1][1] == pytest.approx(expected_final_equity)
 
 
 def test_fees_reduce_net_pnl_but_not_gross_pnl(deterministic_long_df) -> None:

@@ -21,6 +21,12 @@ dev = [
     "black>=24.4",
     "mypy>=1.10",
 ]
+# Only used by tests/integration/test_backtrader_comparison.py to cross-validate
+# this engine's execution/accounting against an established library. Not a
+# runtime dependency; the test skips itself (pytest.importorskip) if absent.
+validation = [
+    "backtrader>=1.9",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

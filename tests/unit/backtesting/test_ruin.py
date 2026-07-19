@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from backtesting.data_feed import DataFeed
 from backtesting.engine import BacktestConfig, BacktestEngine
@@ -43,6 +44,17 @@ def test_no_further_bars_processed_after_ruin(crash_df) -> None:
     # bar even though the feed has bars 4 and 5.
     assert len(result.equity_curve) <= 4
     assert engine.portfolio.tracker.all_open() == []
+
+
+def test_final_equity_consistent_with_closed_trades_after_ruin(crash_df) -> None:
+    strategy = OneShotStrategy(stop_loss=None, take_profit=None, size=1000.0)
+    engine = BacktestEngine(strategy, make_feed(crash_df), ZERO_COST_CONFIG)
+
+    result = engine.run()
+
+    expected = ZERO_COST_CONFIG.initial_capital + sum(t.net_pnl for t in result.closed_trades)
+    assert result.final_equity == pytest.approx(expected)
+    assert result.equity_curve[-1][1] == pytest.approx(expected)
 
 
 def test_non_ruinous_run_is_unaffected(deterministic_long_df) -> None:

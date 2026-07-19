@@ -310,7 +310,16 @@ class BacktestEngine:
     def _close_same_bar(
         self, position: Position, exit_price: float, event: CandleEvent, reason: ExitReason
     ) -> None:
-        self._close(position, exit_price, event.ts, reason, event.symbol, bar_volume=event.volume)
+        self._close(
+            position,
+            exit_price,
+            event.ts,
+            reason,
+            event.symbol,
+            bar_volume=event.volume,
+            bar_low=event.low,
+            bar_high=event.high,
+        )
 
     def _close(
         self,
@@ -320,10 +329,17 @@ class BacktestEngine:
         reason: ExitReason,
         symbol: Symbol,
         bar_volume: float = 0.0,
+        bar_low: float | None = None,
+        bar_high: float | None = None,
     ) -> None:
         side = _EXIT_ORDER_SIDE[position.side]
         fill_price, fee = self.broker.fill(
-            side, position.quantity, exit_price, bar_volume=bar_volume
+            side,
+            position.quantity,
+            exit_price,
+            bar_volume=bar_volume,
+            bar_low=bar_low,
+            bar_high=bar_high,
         )
         trade = self.portfolio.close_position(symbol, fill_price, ts, fee, reason)
         self.bus.publish(
@@ -352,7 +368,12 @@ class BacktestEngine:
         if order.kind == "open":
             assert order.position_side is not None  # always set by _evaluate_entry for "open"
             fill_price, fee = self.broker.fill(
-                order.order_side, order.quantity, event.open, bar_volume=event.volume
+                order.order_side,
+                order.quantity,
+                event.open,
+                bar_volume=event.volume,
+                bar_low=event.low,
+                bar_high=event.high,
             )
             self.portfolio.open_position(
                 symbol,
@@ -383,7 +404,12 @@ class BacktestEngine:
             if position is None:
                 return  # defensive: shouldn't happen, but never fill a close with nothing open
             fill_price, fee = self.broker.fill(
-                order.order_side, order.quantity, event.open, bar_volume=event.volume
+                order.order_side,
+                order.quantity,
+                event.open,
+                bar_volume=event.volume,
+                bar_low=event.low,
+                bar_high=event.high,
             )
             trade = self.portfolio.close_position(
                 symbol, fill_price, event.ts, fee, order.exit_reason or ExitReason.STRATEGY_EXIT
@@ -475,6 +501,7 @@ class BacktestEngine:
         position = self.portfolio.get_position(symbol)
         if position is not None:
             self._close_same_bar(position, event.close, event, ExitReason.RUIN)
+            self._sync_last_equity_point_to_realized_cash()
 
     def _force_close_at_end(self) -> None:
         symbol = self.feed.symbol
@@ -489,4 +516,23 @@ class BacktestEngine:
             ExitReason.END_OF_BACKTEST,
             symbol,
             bar_volume=float(last_row["volume"]),
+            bar_low=float(last_row["low"]),
+            bar_high=float(last_row["high"]),
         )
+        self._sync_last_equity_point_to_realized_cash()
+
+    def _sync_last_equity_point_to_realized_cash(self) -> None:
+        """`record_equity()` for the bar a forced close happens on runs *before*
+        that close (it's step 4 of `_on_candle`; the close itself is a followup
+        action, not a new bar) — so without this, `equity_curve[-1]` would still
+        show the pre-close *unrealized* mark-to-market value, silently
+        inconsistent with the fee/slippage-adjusted trade that's actually in
+        `closed_trades`. An external comparison against Backtrader surfaced this:
+        Backtrader's `getvalue()` never force-closes, so it's a pure mark-to-market
+        number — the two are only comparable once this engine's own reported
+        numbers are internally consistent with each other. See
+        docs/BACKTRADER_COMPARISON.md."""
+        curve = self.portfolio.equity_curve
+        if curve:
+            ts, _ = curve[-1]
+            curve[-1] = (ts, self.portfolio.cash)

@@ -137,7 +137,7 @@ def build_report(
     w = lines.append
 
     w("# Liquidity Exhaustion Reversal System — Long-Horizon Research Report\n")
-    w(f"_Generated {now.isoformat()}_\n")
+    w(f"_Data as-of {now.isoformat()} (synthetic history cutoff, not a live download timestamp)_\n")
 
     # ------------------------------------------------------------------
     w("## 0. Data provenance — read this before anything else\n")
@@ -272,9 +272,14 @@ def build_report(
     w("## 6. Monte Carlo analysis (Phase 6)\n")
     w(
         "Bootstrap resampling (2,000 paths) of the actual realized trade P&L "
-        "distribution from the full-history 1h run — see "
-        "`research/monte_carlo.py`'s module docstring for the stated "
-        "serial-correlation-independence simplification.\n"
+        "distribution from the full-history 1h run. Two stated simplifications "
+        "(see `research/monte_carlo.py`'s module docstring for the full text): "
+        "resampling ignores serial correlation between trades, and each trade's "
+        "dollar P&L is summed additively rather than re-scaled to each simulated "
+        "path's own evolving equity — real fixed-fractional position sizing "
+        "shrinks after a losing streak, this bootstrap does not reproduce that "
+        "self-limiting effect, which likely *overstates* worst-case drawdown/ruin "
+        "on the tail paths below rather than understating it.\n"
     )
     for sym_str, sym_data in deep_results.items():
         w(f"### {sym_str} [1h]\n")

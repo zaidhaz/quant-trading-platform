@@ -22,6 +22,15 @@ specification, and research report for a falsifiable liquidity-sweep-and-reclaim
 reversal hypothesis, deliberately written to translate ambiguous "Smart Money
 Concepts" jargon into precise, testable, market-microstructure-grounded rules.
 
+[`docs/research/LIQUIDITY_EXHAUSTION_REVERSAL_LONG_HORIZON_REPORT.md`](docs/research/LIQUIDITY_EXHAUSTION_REVERSAL_LONG_HORIZON_REPORT.md)
+is a full long-horizon research pipeline (data quality gating, regime analysis,
+rolling out-of-sample validation, Monte Carlo, ±10% parameter-robustness sweeps)
+run against **synthetic** BTCUSDT/ETHUSDT history — `fapi.binance.com` is blocked
+by this sandbox's network policy (confirmed directly, see that report's §0), so
+the pipeline itself was built and validated end-to-end instead of stalling or
+fabricating a real result. `scripts/run_research_pipeline.py` reproduces it
+against real data with zero code changes once network access exists.
+
 ## Quickstart (research engine)
 
 ```bash
@@ -45,13 +54,16 @@ python scripts/run_backtest.py --strategy liquidity_exhaustion_reversal \
     --symbol BTC/USDT --timeframe 1h --start 2023-01-01 --end 2024-01-01 \
     --journal-csv journal.csv
 
-make test   # 284 tests
+make test   # 312 tests
 make lint   # ruff + black --check
 make typecheck  # mypy
 
 # Optional: cross-validate against Backtrader (an established backtesting library)
 pip install -e ".[validation]"
 pytest tests/integration/test_backtrader_comparison.py -v
+
+# Long-horizon research pipeline (synthetic data in this sandbox, see above)
+python -m scripts.run_research_pipeline
 ```
 
 Three strategies ship out of the box: `ma_crossover` and `mean_reversion`

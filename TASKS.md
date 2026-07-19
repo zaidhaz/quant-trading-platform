@@ -244,6 +244,31 @@ connectivity, no dashboard.
 - [x] A16.6 Tests: primitive unit tests, strategy-hook unit tests (including an A/B containment test proving optional filters can only narrow, never expand, the baseline), and integration tests (full backtest sanity, Phase 6 instrumentation coverage on real emitted signals, a complete example-trade walkthrough, and edge cases — no-pool-ever-forms, sweep-with-no-reclaim, backtest shorter than warmup). Full pre-existing 241-test suite still green, confirming this is a pure addition.
 - [x] A16.7 Research report finalized in `docs/strategies/LIQUIDITY_EXHAUSTION_REVERSAL.md` (architecture overview, flow, full parameter table, assumptions/biases, suggested future experiments, parameters intentionally left unoptimized).
 
+## Phase A17 — Long-Horizon Research Pipeline (Binance API unreachable — synthetic data)
+
+> Requested: download the maximum available Binance USDⓈ-M Futures history for
+> BTCUSDT/ETHUSDT across every timeframe and run a full long-horizon validation
+> (data quality, regime analysis, walk-forward, Monte Carlo, parameter robustness).
+> `fapi.binance.com` is blocked by this sandbox's network policy — confirmed directly
+> (`gateway answered 403 to CONNECT (policy denial)`, not a transient failure), logged
+> in `docs/research/LIQUIDITY_EXHAUSTION_REVERSAL_LONG_HORIZON_REPORT.md` §0. Rather
+> than stall or silently fabricate a "real" result, the entire analysis *pipeline* was
+> built and validated end-to-end against synthetic, regime-structured data instead —
+> every module states the synthetic/real boundary explicitly, and the real downloader
+> (`market_data/historical/binance_client.py`) needs zero changes to produce a real
+> report the moment network access exists.
+
+- [x] A17.1 `research/synthetic_history.py` — deterministic, regime-conditioned (bull/bear/range x high/low-vol, funding-correlated) OHLCV + funding generator spanning each symbol's assumed listing date to now, across all 5 supported timeframes.
+- [x] A17.2 `research/data_quality.py` — missing/duplicate/gap/invalid-OHLC/volume-anomaly/funding-range checks; auto-repairs only structural defects (sort, dedupe), flags (never fabricates) anything else, including Open Interest being explicitly unavailable.
+- [x] A17.3 `research/backtest_runner.py` + `trade_records.py` — runs the strategy's own unmodified production config through the real `BacktestEngine`, joining `ClosedTrade`/`JournalEntry` into one analysis-ready record.
+- [x] A17.4 `research/regime_analysis.py` — ground-truth (synthetic-only) and strategy-observed (works on real data too) performance segmentation by trend/volatility/bias/funding-sign/ADX/session.
+- [x] A17.5 `research/rolling_validation.py` — rolling out-of-sample validation with a fixed config (explicitly *not* `optimization/walk_forward.py`'s optimizer) and no look-ahead.
+- [x] A17.6 `research/monte_carlo.py` — bootstrap resampling of realized trade P&L for drawdown/ruin/return distributions, with stated serial-correlation and non-compounding simplifications.
+- [x] A17.7 `research/robustness.py` — ±10% single-parameter perturbation sweep (not optimization) to surface fragility, plus a structural FVG/Order Block on-off comparison.
+- [x] A17.8 `scripts/run_research_pipeline.py` orchestrates all phases into `docs/research/LIQUIDITY_EXHAUSTION_REVERSAL_LONG_HORIZON_REPORT.md`, including an honest Phase 9 scientific conclusion that states plainly this run does not validate a real market edge.
+- [x] A17.9 Two small, generally-applicable fixes surfaced by actually using the pipeline: `analytics/performance_metrics.py` gained `ulcer_index`/`mar_ratio`/`expectancy`/`yearly_returns`/`rolling_sharpe`/`rolling_drawdown`/`rolling_expectancy`; `backtesting/engine.py`'s `StrategyContext.funding_rate` was wired to the sparse funding-accrual-timing series instead of the forward-filled "currently in effect" rate, making per-trade funding instrumentation `NaN` on ~7/8 of trades — now fixed for every strategy, not just this one.
+- [x] A17.10 Tests: `tests/unit/research/` covers the synthetic generator, data-quality repair/flag logic (including injected duplicate/gap/invalid-OHLC/out-of-range fixtures), and every pipeline module. Full suite green (312/312) with zero regressions.
+
 ---
 
 # PART B — Execution Platform (build second, after Part A is validated)

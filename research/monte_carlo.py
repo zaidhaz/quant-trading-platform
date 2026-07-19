@@ -5,10 +5,22 @@ with-replacement resample of the trade outcomes the backtest actually
 produced, reordered, to see the *range* of drawdown/ruin/return outcomes a
 single historical path can't show.
 
-Known, stated simplification: resampling trade P&Ls independently ignores
-serial correlation (e.g. losing streaks clustering in a specific regime) and
-doesn't resample market conditions themselves — a standard limitation of
-trade-level bootstrap Monte Carlo, not specific to this strategy.
+Known, stated simplifications:
+- Resampling trade P&Ls independently ignores serial correlation (e.g. losing
+  streaks clustering in a specific regime) and doesn't resample market
+  conditions themselves — a standard limitation of trade-level bootstrap
+  Monte Carlo, not specific to this strategy.
+- Each trade's realized *dollar* P&L (already sized by the real backtest's
+  fixed-fractional risk engine against equity at that point in real history)
+  is summed additively along each simulated path, rather than re-scaled
+  against that path's own evolving equity. A real losing streak shrinks
+  future position sizes (fixed-fractional sizing is self-limiting); this
+  bootstrap does not reproduce that self-limiting effect on bad simulated
+  paths, since it reuses the original trades' dollar magnitudes regardless of
+  how much of the simulated path's equity has already been lost. This likely
+  *overstates* worst-case drawdown/ruin on the tail paths, not understates
+  it — stated here so the drawdown/ruin figures aren't read as more precise
+  than they are.
 """
 
 from __future__ import annotations

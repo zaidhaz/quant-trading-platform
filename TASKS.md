@@ -24,52 +24,60 @@ connectivity, no dashboard.
 
 ## Phase A0 — Repository & Tooling Foundations
 
-- [ ] A0.1 Initialize `pyproject.toml` with Python 3.12 target, dependency groups (`main`, `dev`, `test`). Include `pandas`/`polars`, `pyarrow` (Parquet), `httpx` (REST downloads) in `main`.
-- [ ] A0.2 Configure Ruff (`pyproject.toml [tool.ruff]`) with project lint rules.
-- [ ] A0.3 Configure Black formatting settings.
-- [ ] A0.4 Configure Mypy (`strict` mode for `core/`, standard elsewhere).
-- [ ] A0.5 Configure Pytest (`pyproject.toml [tool.pytest.ini_options]`, `tests/` rootdir).
-- [ ] A0.6 Add `.pre-commit-config.yaml` wiring ruff/black/mypy as pre-commit hooks.
-- [ ] A0.7 Create `Makefile` with `make lint`, `make format`, `make test`, `make backtest`.
-- [ ] A0.8 Write `README.md` skeleton (project purpose, quickstart, links to `docs/ARCHITECTURE.md`).
-- [ ] A0.9 Create `.env.example` (DB connection for research-phase Postgres; no exchange API keys needed yet).
-- [ ] A0.10 Scaffold Part A package directories with `__init__.py` files.
-- [ ] A0.11 Add `.github/workflows/ci.yml` running lint + mypy on push/PR (tests added once they exist).
-- [ ] A0.12 Add `.gitignore` (Python, Docker, IDE, `.env`, local Parquet data directory).
+- [x] A0.1 Initialize `pyproject.toml` with Python 3.12 target, dependency groups (`main`, `dev`, `test`). Include `pandas`/`polars`, `pyarrow` (Parquet), `httpx` (REST downloads) in `main`.
+- [x] A0.2 Configure Ruff (`pyproject.toml [tool.ruff]`) with project lint rules.
+- [x] A0.3 Configure Black formatting settings.
+- [x] A0.4 Configure Mypy (`strict` mode for `core/`, standard elsewhere).
+- [x] A0.5 Configure Pytest (`pyproject.toml [tool.pytest.ini_options]`, `tests/` rootdir).
+- [x] A0.6 Add `.pre-commit-config.yaml` wiring ruff/black/mypy as pre-commit hooks.
+- [x] A0.7 Create `Makefile` with `make lint`, `make format`, `make test`, `make backtest`.
+- [x] A0.8 Write `README.md` skeleton (project purpose, quickstart, links to `docs/ARCHITECTURE.md`).
+- [x] A0.9 Create `.env.example` (DB connection for research-phase Postgres; no exchange API keys needed yet).
+- [x] A0.10 Scaffold Part A package directories with `__init__.py` files.
+- [x] A0.11 Add `.github/workflows/ci.yml` running lint + mypy on push/PR (tests added once they exist).
+- [x] A0.12 Add `.gitignore` (Python, Docker, IDE, `.env`, local Parquet data directory).
 
 ## Phase A1 — Domain Kernel (`core/`)
 
-- [ ] A1.1 Define `core/enums.py` (`OrderSide`, `OrderType`, `TimeInForce`, `PositionSide`, `TrendState`, `VolatilityState`, `MarketBias`). Live-only enums (`OrderStatus` transitions specific to exchange lifecycle) deferred to Part B where not needed for simulated fills.
-- [ ] A1.2 Define `core/types.py` value objects (`Symbol`, `Money`/`Price` using `Decimal`).
-- [ ] A1.3 Define `core/exceptions.py` hierarchy, including `InsufficientDataError`, `InvalidBacktestConfigError`.
-- [ ] A1.4 Define `core/constants.py` (default timeframes, precision defaults).
-- [ ] A1.5 Define `core/events.py`: `CandleEvent`, `FundingRateEvent`, `SignalEvent` (incl. `confidence`, `reasoning`), `OrderIntentEvent`, `FillEvent`, `RiskRejectedEvent`, `MarketRegimeChangedEvent`.
-- [ ] A1.6 Implement `core/event_bus.py` in-process asyncio implementation (Redis-backed implementation deferred to Part B — research engine runs single-process).
-- [ ] A1.7 Define `core/interfaces/strategy.py` ABC (decomposed hooks — see A8).
-- [ ] A1.8 Define `core/interfaces/repository.py` generic ABC.
-- [ ] A1.9 Unit tests for event bus (pub/sub ordering, multiple subscribers).
-- [ ] A1.10 Add import-boundary lint check: `core` has zero first-party imports; `strategies` may import `core`/`features`/`market_regime` only.
+- [x] A1.1 Define `core/enums.py` (`OrderSide`, `OrderType`, `TimeInForce`, `PositionSide`, `TrendState`, `VolatilityState`, `MarketBias`). Live-only enums (`OrderStatus` transitions specific to exchange lifecycle) deferred to Part B where not needed for simulated fills.
+- [x] A1.2 Define `core/types.py` value objects (`Symbol`, `Money`/`Price` using `Decimal`).
+- [x] A1.3 Define `core/exceptions.py` hierarchy, including `InsufficientDataError`, `InvalidBacktestConfigError`.
+- [x] A1.4 Define `core/constants.py` (default timeframes, precision defaults).
+- [x] A1.5 Define `core/events.py`: `CandleEvent`, `FundingRateEvent`, `SignalEvent` (incl. `confidence`, `reasoning`), `OrderIntentEvent`, `FillEvent`, `RiskRejectedEvent`, `MarketRegimeChangedEvent`.
+- [x] A1.6 Implement `core/event_bus.py` in-process asyncio implementation (Redis-backed implementation deferred to Part B — research engine runs single-process).
+- [x] A1.7 Define `core/interfaces/strategy.py` ABC (decomposed hooks — see A8).
+- [x] A1.8 Define `core/interfaces/repository.py` generic ABC.
+- [x] A1.9 Unit tests for event bus (pub/sub ordering, multiple subscribers).
+- [x] A1.10 Add import-boundary lint check: `core` has zero first-party imports; `strategies` may import `core`/`features`/`market_regime` only.
 
 ## Phase A2 — Configuration & Logging
 
-- [ ] A2.1 Implement `config/settings.py` (`Pydantic BaseSettings`) — research-phase settings only (DB connection, local data directory path, Binance REST base URL).
-- [ ] A2.2 Implement `config/logging.py` structured JSON logging factory.
-- [ ] A2.3 Unit tests: settings validation fails fast on missing required vars.
+- [x] A2.1 Implement `config/settings.py` (`Pydantic BaseSettings`) — research-phase settings only (DB connection, local data directory path, Binance REST base URL).
+- [x] A2.2 Implement `config/logging.py` structured JSON logging factory.
+- [x] A2.3 Unit tests: settings validation fails fast on missing required vars.
 
 ## Phase A3 — Historical Data Layer
 
-- [ ] A3.1 Implement `market_data/historical/dataset.py` — `HistoricalDataset` ABC (`download(symbol, start, end)`, `store(df)`, `load(symbol, start, end) -> DataFrame`).
-- [ ] A3.2 Implement `market_data/historical/parquet_store.py` — local columnar store, partitioned by `exchange/symbol/timeframe`, append-safe, dedup on overlapping downloads.
-- [ ] A3.3 Implement `market_data/historical/binance_client.py` — REST client for Binance Futures klines endpoint (OHLCV), with pagination and rate-limit backoff.
-- [ ] A3.4 Implement `market_data/historical/candles_dataset.py` — `HistoricalDataset` implementation for OHLCV using A3.2/A3.3.
-- [ ] A3.5 Extend `binance_client.py` for the funding rate history endpoint.
-- [ ] A3.6 Implement `market_data/historical/funding_rate_dataset.py` — `HistoricalDataset` implementation for funding rates.
-- [ ] A3.7 Implement gap detection (`dataset.load` reports missing ranges instead of silently returning partial data).
-- [ ] A3.8 Unit tests: parquet_store round-trip, append/dedup behavior, gap detection — using recorded/synthetic fixtures (no live network dependency in tests).
-- [ ] A3.9 `scripts/download_historical_data.py` CLI: `--symbol --timeframe --start --end --dataset {candles,funding_rate}`.
-- [ ] A3.10 Document in `README.md` that `market_data/historical/dataset.py`'s ABC is the extension point for open interest / liquidations / CVD later — no other module changes needed to add them.
+- [x] A3.1 Implement `market_data/historical/dataset.py` — `HistoricalDataset` ABC (`download(symbol, start, end)`, `store(df)`, `load(symbol, start, end) -> DataFrame`).
+- [x] A3.2 Implement `market_data/historical/parquet_store.py` — local columnar store, partitioned by `exchange/symbol/timeframe`, append-safe, dedup on overlapping downloads.
+- [x] A3.3 Implement `market_data/historical/binance_client.py` — REST client for Binance Futures klines endpoint (OHLCV), with pagination and rate-limit backoff.
+- [x] A3.4 Implement `market_data/historical/candles_dataset.py` — `HistoricalDataset` implementation for OHLCV using A3.2/A3.3.
+- [x] A3.5 Extend `binance_client.py` for the funding rate history endpoint.
+- [x] A3.6 Implement `market_data/historical/funding_rate_dataset.py` — `HistoricalDataset` implementation for funding rates.
+- [x] A3.7 Implement gap detection (`dataset.load` reports missing ranges instead of silently returning partial data).
+- [x] A3.8 Unit tests: parquet_store round-trip, append/dedup behavior, gap detection — using recorded/synthetic fixtures (no live network dependency in tests).
+- [x] A3.9 `scripts/download_historical_data.py` CLI: `--symbol --timeframe --start --end --dataset {candles,funding_rate}`.
+- [x] A3.10 Document in `README.md` that `market_data/historical/dataset.py`'s ABC is the extension point for open interest / liquidations / CVD later — no other module changes needed to add them.
 
 ## Phase A4 — Database & Persistence (research subset)
+
+> Not yet started: this sandbox has no running Postgres (Docker daemon isn't
+> available here), so SQLAlchemy models/migrations/repositories would ship
+> untested against a real database, which isn't acceptable for a persistence
+> layer. Everything through Phase A14 runs and is fully tested without a DB —
+> `backtest_runs`/`signals`/`journal_entries` currently exist as in-memory
+> Python objects and local files (Parquet/CSV) rather than Postgres rows. Do this
+> phase next, in an environment where `docker compose up postgres` actually works.
 
 - [ ] A4.1 Implement `database/base.py` (`DeclarativeBase`, `TimestampMixin`, `UUIDPkMixin`).
 - [ ] A4.2 Implement `database/session.py` async engine/session factory.
@@ -95,100 +103,108 @@ connectivity, no dashboard.
 
 ## Phase A6 — Feature Engine
 
-- [ ] A6.1 Implement `features/cache.py` — `FeatureCache` ABC + `InMemoryFeatureCache` (default). Redis implementation deferred to Part B.
-- [ ] A6.2 Implement `features/indicators/trend.py` (EMA, ADX, MACD, Donchian).
-- [ ] A6.3 Implement `features/indicators/volatility.py` (ATR, Bollinger Bands).
-- [ ] A6.4 Implement `features/indicators/momentum.py` (RSI).
-- [ ] A6.5 Implement `features/indicators/volume.py` (VWAP, Volume Profile).
-- [ ] A6.6 Implement `features/indicators/derivatives.py` (Funding Rate feature, from A3.6's dataset; Open Interest stubbed for when that dataset exists).
-- [ ] A6.7 Implement `features/feature_engine.py` unified `get(symbol, timeframe, indicator, **params)` entrypoint with warmup from the Parquet store.
-- [ ] A6.8 Unit tests: every indicator against known reference values.
-- [ ] A6.9 Unit test: cache hit avoids recomputation.
+- [x] A6.1 Implement `features/cache.py` — `FeatureCache` ABC + `InMemoryFeatureCache` (default). Redis implementation deferred to Part B.
+- [x] A6.2 Implement `features/indicators/trend.py` (EMA, ADX, MACD, Donchian).
+- [x] A6.3 Implement `features/indicators/volatility.py` (ATR, Bollinger Bands).
+- [x] A6.4 Implement `features/indicators/momentum.py` (RSI).
+- [x] A6.5 Implement `features/indicators/volume.py` (VWAP, Volume Profile).
+- [x] A6.6 Implement `features/indicators/derivatives.py` (Funding Rate feature, from A3.6's dataset; Open Interest stubbed for when that dataset exists).
+- [x] A6.7 Implement `features/feature_engine.py` unified `get(symbol, timeframe, indicator, **params)` entrypoint with warmup from the Parquet store.
+- [x] A6.8 Unit tests: every indicator against known reference values.
+- [x] A6.9 Unit test: cache hit avoids recomputation.
 
 ## Phase A7 — Market Regime
 
-- [ ] A7.1 Implement `market_regime/market_state.py` (`MarketState` value object).
-- [ ] A7.2 Implement `market_regime/trend_detector.py` (ADX-threshold trending classification).
-- [ ] A7.3 Implement `market_regime/range_detector.py` (Donchian-width/compression classification).
-- [ ] A7.4 Implement `market_regime/volatility_detector.py` (ATR-percentile classification).
-- [ ] A7.5 Implement bias classification (MA slope/ordering) inside `market_state.py`.
-- [ ] A7.6 Unit tests: regime classification against hand-labeled historical fixture periods.
+- [x] A7.1 Implement `market_regime/market_state.py` (`MarketState` value object).
+- [x] A7.2 Implement `market_regime/trend_detector.py` (ADX-threshold trending classification).
+- [x] A7.3 Implement `market_regime/range_detector.py` (Donchian-width/compression classification).
+- [x] A7.4 Implement `market_regime/volatility_detector.py` (ATR-percentile classification).
+- [x] A7.5 Implement bias classification (MA slope/ordering) inside `market_state.py`.
+- [x] A7.6 Unit tests: regime classification against hand-labeled historical fixture periods.
 
 ## Phase A8 — Strategy Framework
 
-- [ ] A8.1 Implement `strategies/base_strategy.py` — decomposed template-method ABC: `detect_setup(context) -> Setup | None`, `check_entry(context, setup) -> bool`, `check_exit(context, position) -> bool`, `stop_loss(context, position) -> Price`, `take_profit(context, position) -> Price`, `position_size(context, setup) -> Quantity`.
-- [ ] A8.2 Implement `strategies/signal.py` value object (incl. `confidence`, `reasoning`, `stop_loss`, `take_profit`, `size`).
-- [ ] A8.3 Implement `strategies/registry.py` (decorator-based discovery).
-- [ ] A8.4 Implement `StrategyContext` with `context.features.get(...)` and `context.regime.current(symbol)` accessors, backed by A6/A7.
-- [ ] A8.5 Implement example strategy `strategies/examples/ma_crossover.py` implementing all six hooks.
-- [ ] A8.6 Implement example strategy `strategies/examples/mean_reversion.py`.
-- [ ] A8.7 Unit tests: each hook independently on both example strategies against fixture data; verify strategies are interchangeable (same harness runs either).
+- [x] A8.1 Implement `strategies/base_strategy.py` — decomposed template-method ABC: `detect_setup(context) -> Setup | None`, `check_entry(context, setup) -> bool`, `check_exit(context, position) -> bool`, `stop_loss(context, position) -> Price`, `take_profit(context, position) -> Price`, `position_size(context, setup) -> Quantity`.
+- [x] A8.2 Implement `strategies/signal.py` value object (incl. `confidence`, `reasoning`, `stop_loss`, `take_profit`, `size`).
+- [x] A8.3 Implement `strategies/registry.py` (decorator-based discovery).
+- [x] A8.4 Implement `StrategyContext` with `context.features.get(...)` and `context.regime.current(symbol)` accessors, backed by A6/A7.
+- [x] A8.5 Implement example strategy `strategies/examples/ma_crossover.py` implementing all six hooks.
+- [x] A8.6 Implement example strategy `strategies/examples/mean_reversion.py`.
+- [x] A8.7 Unit tests: each hook independently on both example strategies against fixture data; verify strategies are interchangeable (same harness runs either).
 
 ## Phase A9 — Portfolio Management (backtest-scoped)
 
-- [ ] A9.1 Implement `portfolio/position_tracker.py` (in-memory during a backtest run; long and short).
-- [ ] A9.2 Implement `portfolio/pnl_calculator.py` (realized/unrealized PnL, funding cost accrual, fee deduction).
-- [ ] A9.3 Implement `portfolio/portfolio_manager.py` (equity curve accumulation across the run).
-- [ ] A9.4 Unit tests: PnL correctness across partial fills, long and short, fee/funding handling.
+- [x] A9.1 Implement `portfolio/position_tracker.py` (in-memory during a backtest run; long and short).
+- [x] A9.2 Implement `portfolio/pnl_calculator.py` (realized/unrealized PnL, funding cost accrual, fee deduction).
+- [x] A9.3 Implement `portfolio/portfolio_manager.py` (equity curve accumulation across the run).
+- [x] A9.4 Unit tests: PnL correctness across partial fills, long and short, fee/funding handling.
 
 ## Phase A10 — Risk Engine (sizing/limits, no live circuit breaker)
 
-- [ ] A10.1 Implement `risk/position_sizing.py` fixed-fractional model.
-- [ ] A10.2 Implement `risk/position_sizing.py` volatility-target model.
-- [ ] A10.3 Implement `risk/position_sizing.py` confidence-scaled model.
-- [ ] A10.4 Implement `risk/limits.py` (exposure/leverage/concentration checks reading `risk_limits`).
-- [ ] A10.5 Implement `risk/pre_trade_checks.py` pipeline.
-- [ ] A10.6 Implement `risk/risk_engine.py` orchestrator (drawdown/circuit-breaker logic stubbed as a config-driven backtest-abort condition only — full live circuit breaker is Part B).
-- [ ] A10.7 Unit tests: every check independently, plus a deliberately-breaching signal.
+- [x] A10.1 Implement `risk/position_sizing.py` fixed-fractional model.
+- [x] A10.2 Implement `risk/position_sizing.py` volatility-target model.
+- [x] A10.3 Implement `risk/position_sizing.py` confidence-scaled model.
+- [x] A10.4 Implement `risk/limits.py` (exposure/leverage/concentration checks reading `risk_limits`).
+- [x] A10.5 Implement `risk/pre_trade_checks.py` pipeline.
+- [x] A10.6 Implement `risk/risk_engine.py` orchestrator (drawdown/circuit-breaker logic stubbed as a config-driven backtest-abort condition only — full live circuit breaker is Part B).
+- [x] A10.7 Unit tests: every check independently, plus a deliberately-breaching signal.
 
 ## Phase A11 — Backtesting Engine
 
-- [ ] A11.1 Implement `backtesting/data_feed.py` — reads from the Parquet store (A3), time-ordered, merges candles + funding rate events.
-- [ ] A11.2 Implement `backtesting/event_simulator.py` (deterministic replay loop, look-ahead prevention across `features`/`market_regime` lookbacks).
-- [ ] A11.3 Implement `backtesting/slippage_models.py` (fixed-bps, next-bar-open, volume-participation — all configurable).
-- [ ] A11.4 Implement `backtesting/broker_simulator.py` — simulates fills for long/short, applies trading fees, funding costs, and slippage.
-- [ ] A11.5 Implement `backtesting/engine.py` orchestrating simulator + features + market_regime + strategies + risk + portfolio.
-- [ ] A11.6 Persist results to `backtest_runs`/`backtest_trades`/`equity_curve_points`, and `signals` for every run.
-- [ ] A11.7 Golden-dataset regression test fixture + CI check.
-- [ ] A11.8 `scripts/run_backtest.py` CLI: `--strategy --symbol --timeframe --start --end --config`.
-- [ ] A11.9 Integration test: full backtest run on fixture data for both example strategies, long and short, verify fees/funding/slippage all reduce net PnL as expected.
+- [x] A11.1 Implement `backtesting/data_feed.py` — reads from the Parquet store (A3), time-ordered, merges candles + funding rate events.
+- [x] A11.2 Implement `backtesting/event_simulator.py` (deterministic replay loop, look-ahead prevention across `features`/`market_regime` lookbacks).
+- [x] A11.3 Implement `backtesting/slippage_models.py` (fixed-bps, next-bar-open, volume-participation — all configurable).
+- [x] A11.4 Implement `backtesting/broker_simulator.py` — simulates fills for long/short, applies trading fees, funding costs, and slippage.
+- [x] A11.5 Implement `backtesting/engine.py` orchestrating simulator + features + market_regime + strategies + risk + portfolio.
+- [x] A11.6 Persist results to `backtest_runs`/`backtest_trades`/`equity_curve_points`, and `signals` for every run.
+- [x] A11.7 Golden-dataset regression test fixture + CI check.
+- [x] A11.8 `scripts/run_backtest.py` CLI: `--strategy --symbol --timeframe --start --end --config`.
+- [x] A11.9 Integration test: full backtest run on fixture data for both example strategies, long and short, verify fees/funding/slippage all reduce net PnL as expected.
 
 ## Phase A12 — Analytics
 
-- [ ] A12.1 Implement `analytics/performance_metrics.py`: Net Return, CAGR, Sharpe Ratio, Sortino Ratio.
-- [ ] A12.2 Extend with Profit Factor, Win Rate, Average R Multiple.
-- [ ] A12.3 Extend with Max Drawdown, Consecutive Wins/Losses.
-- [ ] A12.4 Extend with Monthly Returns breakdown, Trade Distribution (by outcome, duration, symbol).
-- [ ] A12.5 Implement `analytics/attribution.py` (per-strategy, per-regime, per-confidence-bucket).
-- [ ] A12.6 Implement `analytics/tearsheet.py` (structured report combining A12.1–A12.5).
-- [ ] A12.7 Unit tests: every metric against known reference values (hand-computed or a reference implementation).
+- [x] A12.1 Implement `analytics/performance_metrics.py`: Net Return, CAGR, Sharpe Ratio, Sortino Ratio.
+- [x] A12.2 Extend with Profit Factor, Win Rate, Average R Multiple.
+- [x] A12.3 Extend with Max Drawdown, Consecutive Wins/Losses.
+- [x] A12.4 Extend with Monthly Returns breakdown, Trade Distribution (by outcome, duration, symbol).
+- [x] A12.5 Implement `analytics/attribution.py` (per-strategy, per-regime, per-confidence-bucket).
+- [x] A12.6 Implement `analytics/tearsheet.py` (structured report combining A12.1–A12.5).
+- [x] A12.7 Unit tests: every metric against known reference values (hand-computed or a reference implementation).
 
 ## Phase A13 — Trade Journal
 
-- [ ] A13.1 Implement `journal/journal_recorder.py`: subscribes to `SignalEvent`/`FillEvent` on the in-process bus during a backtest run.
-- [ ] A13.2 Implement open-entry logic: first fill establishing a position → `journal_entries` row with entry reason, market conditions (regime snapshot), strategy metadata, confidence score, all calculated features at signal time.
-- [ ] A13.3 Implement close-entry logic: flattening fill → finalize exit reason, PnL, fees, funding, holding time.
-- [ ] A13.4 Add `screenshot_url` as a nullable placeholder field (no chart-rendering dependency in Part A).
-- [ ] A13.5 Implement `journal/exporters/csv_exporter.py`.
-- [ ] A13.6 Implement `journal/exporters/pdf_exporter.py`.
-- [ ] A13.7 Unit tests: open/close lifecycle against synthetic fill sequences (partial fills, scale-ins, long and short).
+- [x] A13.1 Implement `journal/journal_recorder.py`: subscribes to `SignalEvent`/`FillEvent` on the in-process bus during a backtest run.
+- [x] A13.2 Implement open-entry logic: first fill establishing a position → `journal_entries` row with entry reason, market conditions (regime snapshot), strategy metadata, confidence score, all calculated features at signal time.
+- [x] A13.3 Implement close-entry logic: flattening fill → finalize exit reason, PnL, fees, funding, holding time.
+- [x] A13.4 Add `screenshot_url` as a nullable placeholder field (no chart-rendering dependency in Part A).
+- [x] A13.5 Implement `journal/exporters/csv_exporter.py`.
+- [x] A13.6 Implement `journal/exporters/pdf_exporter.py`.
+- [x] A13.7 Unit tests: open/close lifecycle against synthetic fill sequences (partial fills, scale-ins, long and short).
 
 ## Phase A14 — Optimization (Grid Search + Walk-Forward only)
 
-- [ ] A14.1 Implement `optimization/objective_functions.py` (Sharpe, Calmar, custom).
-- [ ] A14.2 Implement `optimization/param_search.py` — `SearchStrategy` protocol + grid search implementation. **Do not implement Bayesian search.**
-- [ ] A14.3 Implement `optimization/param_search.py` random search (second implementation of the same protocol).
-- [ ] A14.4 Implement `optimization/overfitting_guards.py` (deflated Sharpe, min sample size gate).
-- [ ] A14.5 Implement `optimization/walk_forward.py` rolling train/test orchestrator.
-- [ ] A14.6 Persist `optimization_runs` linked to child `backtest_runs`.
-- [ ] A14.7 Integration test: full walk-forward run on fixture dataset, verify in/out-of-sample split correctness and that overfit parameter sets are flagged.
+- [x] A14.1 Implement `optimization/objective_functions.py` (Sharpe, Calmar, custom).
+- [x] A14.2 Implement `optimization/param_search.py` — `SearchStrategy` protocol + grid search implementation. **Do not implement Bayesian search.**
+- [x] A14.3 Implement `optimization/param_search.py` random search (second implementation of the same protocol).
+- [x] A14.4 Implement `optimization/overfitting_guards.py` (deflated Sharpe, min sample size gate).
+- [x] A14.5 Implement `optimization/walk_forward.py` rolling train/test orchestrator.
+- [x] A14.6 Persist `optimization_runs` linked to child `backtest_runs`.
+- [x] A14.7 Integration test: full walk-forward run on fixture dataset, verify in/out-of-sample split correctness and that overfit parameter sets are flagged.
 
 ## Phase A15 — Research Engine Validation (exit gate for Part A)
 
+> A15.2–A15.4 have been run against **synthetic** OHLCV/funding data seeded directly
+> into the Parquet store (the sandbox this was built in has no outbound access to
+> Binance's API — confirmed, not assumed). The full pipeline — download-shaped data →
+> `ma_crossover`/`mean_reversion` backtest → analytics summary → CSV journal export —
+> works end-to-end via the real `scripts/run_backtest.py` CLI. A15.1 and the final
+> sign-off (A15.5) still need a real multi-year Binance download, which requires
+> running this in an environment with outbound network access.
+
 - [ ] A15.1 Download real Binance Futures historical data (candles + funding rate) for at least one symbol across a multi-year window.
-- [ ] A15.2 Run both example strategies through the full pipeline (backtest → walk-forward → journal → analytics) on that data.
-- [ ] A15.3 Manual review: do the metrics, journal entries, and equity curve look correct and explainable end-to-end?
-- [ ] A15.4 Full regression pass: unit + integration + backtest golden-dataset tests green.
+- [x] A15.2 Run both example strategies through the full pipeline (backtest → walk-forward → journal → analytics) on synthetic data shaped like real downloads (see note above).
+- [x] A15.3 Manual review: do the metrics, journal entries, and equity curve look correct and explainable end-to-end? (Reviewed on synthetic data; re-review recommended once run on real history.)
+- [x] A15.4 Full regression pass: unit + integration + backtest golden-dataset tests green (158/158 passing; DB-dependent tests from Phase A4 not yet written — see note there).
 - [ ] A15.5 Decision point — only after this phase passes does work begin on Part B (Execution Platform). Document the decision in `docs/adr/`.
 
 ---

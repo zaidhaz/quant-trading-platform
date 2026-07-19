@@ -25,18 +25,36 @@ once implementation starts.
 | Trade journal | Added (`journal/`). | Cheap — mostly a structured view over data the system already produces (signals, fills, positions) plus a few new fields. High operational value for a platform meant to run for months. |
 | Confidence scoring | Added as a field flowing through `Signal` → `SignalEvent` → Risk → Journal → Dashboard → Backtests → Analytics. | Cheap to carry as data. Scoped to degrade gracefully: simple single-signal strategies compute confidence from whatever inputs they have; composite strategies get the full formula including signal agreement. |
 
-**Version 1 scope** (everything else stays on the roadmap, §20):
+### Revision 2 — research-first implementation order
 
-- Binance Futures (only exchange)
-- Paper Trading
-- Live Trading
-- Backtesting (event-driven, Grid Search + Walk-Forward optimization)
-- Dashboard
-- Risk Engine (incl. circuit breaker)
-- Strategy Engine (incl. Feature Engine, Market Regime, optional Strategy Voting)
-- Portfolio Management
-- Trade Journal
-- Confidence Scoring
+V1 is now built in two parts, **research before execution**, so strategies are
+validated before any capital (paper or live) is put at risk. The module boundaries
+below were unchanged by this revision — `backtesting/` never depended on
+`execution/`, `api/`, or `dashboard/` — so this is a scheduling change, not a
+redesign. Five concrete adjustments were required:
+
+| Adjustment | Decision | Reasoning |
+|---|---|---|
+| Historical data storage | Added a local Parquet-based columnar store (`market_data/historical/`) as the primary fast-access path for OHLCV + funding rate series. Postgres/Timescale remains system-of-record for metadata and research *outputs* (signals, backtests, journal), not raw time series. | Repeated backtest iteration needs fast, repeated reads over large histories; DB round-trips for that access pattern are unnecessarily slow this early, and pull in infra (a running Postgres) that isn't needed just to validate a strategy idea. |
+| Dataset extensibility | `HistoricalDataset` ABC (`download`/`store`/`load`) standardizes each dataset type. | Open interest, liquidations, and CVD can be added later as new implementations without touching `backtesting/data_feed.py`. |
+| Feature cache | Made pluggable: in-memory implementation is the default for the research engine; the Redis implementation (already planned) is wired in only once live/multi-process sharing is needed. | Running a backtest shouldn't require a Redis instance. |
+| Strategy interface | Decomposed `base_strategy.Strategy` from one `on_market_data` handler into named template-method hooks: `detect_setup`, `check_entry`, `check_exit`, `stop_loss`, `take_profit`, `position_size`. | Directly satisfies strategy interchangeability; each hook is independently unit-testable, which a monolithic handler is not. |
+| Database schema phasing | Research tables (`symbols`, `exchanges`, `strategy_definitions/instances`, `signals`, `market_regime_snapshots`, `backtest_runs/trades`, `equity_curve_points`, `optimization_runs`, `journal_entries`, `risk_limits`) are built first. Execution tables (`accounts`, `balances`, `orders`, `trades`, `positions`) move to the Execution Platform part. | No reason to persist live account/order state before there's a live account to persist it for. |
+
+**Part A — Research & Backtesting Engine (build first):** Historical Data Layer,
+Feature Engine, Market Regime, Strategy Framework, Risk Engine (sizing/limits, no
+live circuit breaker yet), Portfolio Management (in-memory, backtest-scoped),
+Backtesting Engine, Analytics, Trade Journal, Optimization (Grid Search +
+Walk-Forward only — **no Bayesian optimization**).
+
+**Part B — Execution Platform (build second, only once strategies are validated):**
+live market data (WS), exchange adapters (paper + Binance live), order lifecycle,
+notifications, API, Dashboard, paper-trading soak, live-execution readiness.
+
+**Part C — Post-V1 Roadmap:** unchanged from Revision 1 (§20) — Bybit/other
+exchanges, Bayesian optimization, sentiment data, AI research, etc.
+
+See `TASKS.md` for the phase-by-phase breakdown.
 
 ---
 
